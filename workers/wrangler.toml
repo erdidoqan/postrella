@@ -1,0 +1,26 @@
+name = "postrella-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+account_id = "0f6cb9b6c5fb3a6db6781f0dc9f36844"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "postrella"
+database_id = "01cd50e6-def0-48af-8d91-58958f30785e"
+
+[vars]
+# These can be overridden with wrangler secret put
+# GEMINI_API_KEY = ""
+# SERPAPI_API_KEY = ""
+# SESSION_SECRET = ""
+# CLOUDINARY_CLOUD_NAME = ""
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+

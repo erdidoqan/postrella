@@ -21,9 +21,9 @@ export function Header() {
   const handleFetchTrends = async () => {
     setIsFetching(true);
     try {
-      const result = await workerClient.fetchTrends();
+      const result = await workerClient.fetchTrends({ all_sites: true });
       if (result.success && result.data) {
-        alert(`Fetched ${result.data.pinterest_count} Pinterest + ${result.data.google_trends_count} Google trends!`);
+        alert(`Fetched ${result.data.summary.total_fetched} trends, ${result.data.summary.total_new} new keywords from ${result.data.summary.total_sites} sites!`);
       }
     } catch (error) {
       console.error('Failed to fetch trends:', error);

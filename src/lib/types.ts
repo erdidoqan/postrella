@@ -233,3 +233,86 @@ export interface PublishFilters {
   limit?: number;
 }
 
+// Site Config types
+export interface SiteConfig {
+  id: number;
+  name: string;
+  site_id: string;
+  api_key: string;
+  domain: string | null;
+  is_active: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SiteTrendConfig {
+  id: number;
+  site_config_id: number;
+  keywords: string; // JSON array string
+  geo: string;
+  cat: string;
+  date: string;
+  excluded_keywords: string | null; // JSON array string
+  q_filter: string | null;
+  is_active: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateSiteConfigRequest {
+  name: string;
+  site_id: string;
+  api_key: string;
+  domain?: string;
+}
+
+export interface UpdateSiteConfigRequest {
+  name?: string;
+  site_id?: string;
+  api_key?: string;
+  domain?: string;
+  is_active?: number;
+}
+
+export interface CreateSiteTrendConfigRequest {
+  keywords: string[];
+  geo?: string;
+  cat?: string;
+  date?: string;
+  excluded_keywords?: string[];
+  q_filter?: string;
+}
+
+export interface UpdateSiteTrendConfigRequest {
+  keywords?: string[];
+  geo?: string;
+  cat?: string;
+  date?: string;
+  excluded_keywords?: string[];
+  q_filter?: string;
+  is_active?: number;
+}
+
+export interface TrendsFetchRequest {
+  site_config_id?: number;
+  all_sites?: boolean;
+  keywords?: string[];
+}
+
+export interface TrendsFetchResponse {
+  sites: Array<{
+    site_config_id: number;
+    site_name: string;
+    configs_processed: number;
+    total_fetched: number;
+    new_keywords: number;
+    duplicates: number;
+    excluded: number;
+  }>;
+  summary: {
+    total_sites: number;
+    total_fetched: number;
+    total_new: number;
+  };
+}
+

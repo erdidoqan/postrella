@@ -6,7 +6,7 @@
 import { handleCors, corsHeaders, getRequestOrigin } from './utils/auth';
 import { errorResponse, successResponse, paginatedResponse, NotFoundError, BadRequestError } from './utils/errors';
 import { SCHEMA_SQL } from './db/schema';
-import type { Source, Topic, ContentJob, ContentOutput, Publish, Setting, GoogleTrendsConfig } from './db/schema';
+import type { Source, Topic, ContentJob, ContentOutput, Publish, Setting, GoogleTrendsConfig, SiteConfig, SiteTrendConfig } from './db/schema';
 import { fetchGoogleTrends, isValidGoogleTrendsDate } from './services/trends/google-trends';
 import { fetchPinterestTrends } from './services/trends/pinterest';
 import { GeminiService, ContentStrategy } from './services/ai/gemini';
@@ -1306,29 +1306,311 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         }));
       }
 
-      // Fetch trends from Google Trends with keywords parameter
+      // Site Configs API
+      if (path === '/api/site-configs' && method === 'GET') {
+        const configs = await env.DB.prepare('SELECT * FROM site_configs ORDER BY created_at DESC').all<SiteConfig>();
+        return addCorsHeaders(successResponse(configs.results));
+      }
+
+      if (path === '/api/site-configs' && method === 'POST') {
+        const body = await request.json() as { name: string; site_id: string; api_key: string; domain?: string };
+        if (!body.name || !body.site_id || !body.api_key) {
+          throw new BadRequestError('name, site_id, and api_key are required');
+        }
+
+        const result = await env.DB.prepare(`
+          INSERT INTO site_configs (name, site_id, api_key, domain, created_at, updated_at)
+          VALUES (?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+        `).bind(body.name, body.site_id, body.api_key, body.domain || null).run();
+
+        const newConfig = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(result.meta.last_row_id).first<SiteConfig>();
+
+        return addCorsHeaders(successResponse(newConfig));
+      }
+
+      if (path.startsWith('/api/site-configs/') && method === 'GET') {
+        const id = parseInt(path.split('/')[3]);
+        if (isNaN(id)) {
+          throw new BadRequestError('Invalid site config ID');
+        }
+
+        const config = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(id).first<SiteConfig>();
+
+        if (!config) {
+          throw new NotFoundError('Site config not found');
+        }
+
+        return addCorsHeaders(successResponse(config));
+      }
+
+      if (path.startsWith('/api/site-configs/') && method === 'PUT') {
+        const id = parseInt(path.split('/')[3]);
+        if (isNaN(id)) {
+          throw new BadRequestError('Invalid site config ID');
+        }
+
+        const body = await request.json() as { name?: string; site_id?: string; api_key?: string; domain?: string; is_active?: number };
+        
+        const existing = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(id).first<SiteConfig>();
+
+        if (!existing) {
+          throw new NotFoundError('Site config not found');
+        }
+
+        const updates: string[] = [];
+        const values: unknown[] = [];
+
+        if (body.name !== undefined) {
+          updates.push('name = ?');
+          values.push(body.name);
+        }
+        if (body.site_id !== undefined) {
+          updates.push('site_id = ?');
+          values.push(body.site_id);
+        }
+        if (body.api_key !== undefined) {
+          updates.push('api_key = ?');
+          values.push(body.api_key);
+        }
+        if (body.domain !== undefined) {
+          updates.push('domain = ?');
+          values.push(body.domain);
+        }
+        if (body.is_active !== undefined) {
+          updates.push('is_active = ?');
+          values.push(body.is_active);
+        }
+
+        if (updates.length === 0) {
+          throw new BadRequestError('No fields to update');
+        }
+
+        updates.push('updated_at = strftime(\'%s\', \'now\')');
+        values.push(id);
+
+        await env.DB.prepare(`UPDATE site_configs SET ${updates.join(', ')} WHERE id = ?`)
+          .bind(...values).run();
+
+        const updated = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(id).first<SiteConfig>();
+
+        return addCorsHeaders(successResponse(updated));
+      }
+
+      if (path.startsWith('/api/site-configs/') && method === 'DELETE') {
+        const id = parseInt(path.split('/')[3]);
+        if (isNaN(id)) {
+          throw new BadRequestError('Invalid site config ID');
+        }
+
+        const existing = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(id).first<SiteConfig>();
+
+        if (!existing) {
+          throw new NotFoundError('Site config not found');
+        }
+
+        await env.DB.prepare('DELETE FROM site_configs WHERE id = ?').bind(id).run();
+
+        return addCorsHeaders(successResponse({ message: 'Site config deleted' }));
+      }
+
+      if (path.startsWith('/api/site-configs/') && path.endsWith('/test') && method === 'POST') {
+        const id = parseInt(path.split('/')[3]);
+        if (isNaN(id)) {
+          throw new BadRequestError('Invalid site config ID');
+        }
+
+        const config = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(id).first<SiteConfig>();
+
+        if (!config) {
+          throw new NotFoundError('Site config not found');
+        }
+
+        try {
+          const testResult = await testSiteConnection({
+            siteId: config.site_id,
+            apiKey: config.api_key,
+          });
+
+          return addCorsHeaders(successResponse({ connected: true, message: 'Connection successful' }));
+        } catch (error) {
+          return addCorsHeaders(errorResponse(
+            error instanceof Error ? error.message : 'Connection failed',
+            400
+          ));
+        }
+      }
+
+      // Site Trend Configs API
+      if (path.startsWith('/api/site-configs/') && path.endsWith('/trends') && method === 'GET') {
+        const siteId = parseInt(path.split('/')[3]);
+        if (isNaN(siteId)) {
+          throw new BadRequestError('Invalid site config ID');
+        }
+
+        const configs = await env.DB.prepare('SELECT * FROM site_trend_configs WHERE site_config_id = ? ORDER BY created_at DESC')
+          .bind(siteId).all<SiteTrendConfig>();
+
+        return addCorsHeaders(successResponse(configs.results));
+      }
+
+      if (path.startsWith('/api/site-configs/') && path.endsWith('/trends') && method === 'POST') {
+        const siteId = parseInt(path.split('/')[3]);
+        if (isNaN(siteId)) {
+          throw new BadRequestError('Invalid site config ID');
+        }
+
+        const body = await request.json() as { 
+          keywords: string[]; 
+          geo?: string; 
+          cat?: string; 
+          date?: string; 
+          excluded_keywords?: string[]; 
+          q_filter?: string;
+        };
+
+        if (!body.keywords || !Array.isArray(body.keywords) || body.keywords.length === 0) {
+          throw new BadRequestError('keywords array is required');
+        }
+
+        const existing = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ?')
+          .bind(siteId).first<SiteConfig>();
+
+        if (!existing) {
+          throw new NotFoundError('Site config not found');
+        }
+
+        const result = await env.DB.prepare(`
+          INSERT INTO site_trend_configs (site_config_id, keywords, geo, cat, date, excluded_keywords, q_filter, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+        `).bind(
+          siteId,
+          JSON.stringify(body.keywords),
+          body.geo || 'US',
+          body.cat || '0',
+          body.date || 'now 1-d',
+          body.excluded_keywords ? JSON.stringify(body.excluded_keywords) : null,
+          body.q_filter || null
+        ).run();
+
+        const newConfig = await env.DB.prepare('SELECT * FROM site_trend_configs WHERE id = ?')
+          .bind(result.meta.last_row_id).first<SiteTrendConfig>();
+
+        return addCorsHeaders(successResponse(newConfig));
+      }
+
+      if (path.startsWith('/api/site-configs/') && path.includes('/trends/') && method === 'PUT') {
+        const parts = path.split('/');
+        const siteId = parseInt(parts[3]);
+        const trendId = parseInt(parts[5]);
+        
+        if (isNaN(siteId) || isNaN(trendId)) {
+          throw new BadRequestError('Invalid site config or trend config ID');
+        }
+
+        const body = await request.json() as { 
+          keywords?: string[]; 
+          geo?: string; 
+          cat?: string; 
+          date?: string; 
+          excluded_keywords?: string[]; 
+          q_filter?: string;
+          is_active?: number;
+        };
+
+        const existing = await env.DB.prepare('SELECT * FROM site_trend_configs WHERE id = ? AND site_config_id = ?')
+          .bind(trendId, siteId).first<SiteTrendConfig>();
+
+        if (!existing) {
+          throw new NotFoundError('Trend config not found');
+        }
+
+        const updates: string[] = [];
+        const values: unknown[] = [];
+
+        if (body.keywords !== undefined) {
+          updates.push('keywords = ?');
+          values.push(JSON.stringify(body.keywords));
+        }
+        if (body.geo !== undefined) {
+          updates.push('geo = ?');
+          values.push(body.geo);
+        }
+        if (body.cat !== undefined) {
+          updates.push('cat = ?');
+          values.push(body.cat);
+        }
+        if (body.date !== undefined) {
+          updates.push('date = ?');
+          values.push(body.date);
+        }
+        if (body.excluded_keywords !== undefined) {
+          updates.push('excluded_keywords = ?');
+          values.push(body.excluded_keywords ? JSON.stringify(body.excluded_keywords) : null);
+        }
+        if (body.q_filter !== undefined) {
+          updates.push('q_filter = ?');
+          values.push(body.q_filter || null);
+        }
+        if (body.is_active !== undefined) {
+          updates.push('is_active = ?');
+          values.push(body.is_active);
+        }
+
+        if (updates.length === 0) {
+          throw new BadRequestError('No fields to update');
+        }
+
+        updates.push('updated_at = strftime(\'%s\', \'now\')');
+        values.push(trendId);
+
+        await env.DB.prepare(`UPDATE site_trend_configs SET ${updates.join(', ')} WHERE id = ?`)
+          .bind(...values).run();
+
+        const updated = await env.DB.prepare('SELECT * FROM site_trend_configs WHERE id = ?')
+          .bind(trendId).first<SiteTrendConfig>();
+
+        return addCorsHeaders(successResponse(updated));
+      }
+
+      if (path.startsWith('/api/site-configs/') && path.includes('/trends/') && method === 'DELETE') {
+        const parts = path.split('/');
+        const siteId = parseInt(parts[3]);
+        const trendId = parseInt(parts[5]);
+        
+        if (isNaN(siteId) || isNaN(trendId)) {
+          throw new BadRequestError('Invalid site config or trend config ID');
+        }
+
+        const existing = await env.DB.prepare('SELECT * FROM site_trend_configs WHERE id = ? AND site_config_id = ?')
+          .bind(trendId, siteId).first<SiteTrendConfig>();
+
+        if (!existing) {
+          throw new NotFoundError('Trend config not found');
+        }
+
+        await env.DB.prepare('DELETE FROM site_trend_configs WHERE id = ?').bind(trendId).run();
+
+        return addCorsHeaders(successResponse({ message: 'Trend config deleted' }));
+      }
+
+      // Fetch trends from Google Trends - supports site-based or manual keywords
       if (path === '/api/trends/fetch' && method === 'POST') {
         const serpApiKey = env.SERPAPI_API_KEY || await getSetting(env.DB, 'serpapi_api_key');
         if (!serpApiKey) {
           throw new BadRequestError('SerpAPI key not configured');
         }
 
-        // Get keywords from request body
-        const body = await request.json() as { keywords: string[] };
-        if (!body.keywords || !Array.isArray(body.keywords) || body.keywords.length === 0) {
-          throw new BadRequestError('keywords array is required');
-        }
-
-        const googleTrendsConfigStr = await getSetting(env.DB, 'google_trends_config');
-        const baseConfig = googleTrendsConfigStr 
-          ? JSON.parse(googleTrendsConfigStr) as GoogleTrendsConfig
-          : { geo: 'US', date: 'now 1-d' };
-
-        // Get the configured search query for matching
-        const configuredQuery = baseConfig.q?.toLowerCase().trim() || '';
-        
-        // Get excluded keywords list
-        const excludedKeywords = (baseConfig.excluded_keywords || []).map(k => k.toLowerCase().trim());
+        const body = await request.json() as { 
+          site_config_id?: number; 
+          all_sites?: boolean; 
+          keywords?: string[];
+        };
 
         const googleSource = await env.DB.prepare(
           'SELECT id FROM sources WHERE name = ?'
@@ -1338,26 +1620,18 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           throw new BadRequestError('Google Trends source not found');
         }
 
-        let totalFetched = 0;
-        let newKeywords = 0;
-        let duplicates = 0;
-        let filteredOut = 0; // Keywords that don't match the configured query
-        let excludedCount = 0; // Keywords that contain excluded terms
-        const results: Array<{ keyword: string; fetched: number; new: number }> = [];
-
         // Helper function to check if a keyword matches the configured query
-        const matchesConfiguredQuery = (keyword: string): boolean => {
-          if (!configuredQuery) {
-            // If no query is configured, accept all keywords
+        const matchesConfiguredQuery = (keyword: string, queryFilter?: string | null): boolean => {
+          if (!queryFilter) {
             return true;
           }
           const keywordLower = keyword.toLowerCase().trim();
-          // Check if keyword contains the configured query or vice versa
-          return keywordLower.includes(configuredQuery) || configuredQuery.includes(keywordLower);
+          const queryLower = queryFilter.toLowerCase().trim();
+          return keywordLower.includes(queryLower) || queryLower.includes(keywordLower);
         };
 
         // Helper function to check if a keyword contains any excluded terms
-        const containsExcludedTerm = (keyword: string): boolean => {
+        const containsExcludedTerm = (keyword: string, excludedKeywords: string[]): boolean => {
           if (excludedKeywords.length === 0) {
             return false;
           }
@@ -1365,70 +1639,272 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           return excludedKeywords.some(excluded => keywordLower.includes(excluded));
         };
 
-        // Fetch trends for each keyword
-        for (const keyword of body.keywords) {
-          const config: GoogleTrendsConfig = {
-            q: keyword.trim(),
-            geo: baseConfig.geo,
-            date: baseConfig.date,
-            cat: baseConfig.cat,
-          };
+        // Helper function to process keywords for a trend config
+        const processTrendConfig = async (
+          trendConfig: SiteTrendConfig,
+          siteConfigId: number,
+          siteName: string
+        ): Promise<{
+          fetched: number;
+          new: number;
+          duplicates: number;
+          filtered: number;
+          excluded: number;
+        }> => {
+          const keywords = JSON.parse(trendConfig.keywords) as string[];
+          const excludedKeywords = trendConfig.excluded_keywords 
+            ? (JSON.parse(trendConfig.excluded_keywords) as string[]).map(k => k.toLowerCase().trim())
+            : [];
 
-          try {
-            const googleResults = await fetchGoogleTrends(serpApiKey, config);
-            let keywordNew = 0;
+          let fetched = 0;
+          let newCount = 0;
+          let duplicates = 0;
+          let filtered = 0;
+          let excluded = 0;
 
-            for (const result of googleResults) {
-              // Check if the result keyword matches the configured search query
-              if (!matchesConfiguredQuery(result.keyword)) {
-                filteredOut++;
-                continue; // Skip this keyword if it doesn't match
+          for (const keyword of keywords) {
+            const config: GoogleTrendsConfig = {
+              q: keyword.trim(),
+              geo: trendConfig.geo,
+              date: trendConfig.date,
+              cat: trendConfig.cat,
+            };
+
+            try {
+              const googleResults = await fetchGoogleTrends(serpApiKey, config);
+
+              for (const result of googleResults) {
+                fetched++;
+
+                // Check query filter
+                if (!matchesConfiguredQuery(result.keyword, trendConfig.q_filter)) {
+                  filtered++;
+                  continue;
+                }
+
+                // Check excluded keywords
+                if (containsExcludedTerm(result.keyword, excludedKeywords)) {
+                  excluded++;
+                  continue;
+                }
+
+                // Check if topic already exists
+                const existing = await env.DB.prepare(
+                  'SELECT id FROM topics WHERE keyword = ? AND source_id = ?'
+                ).bind(result.keyword, googleSource.id).first();
+
+                if (!existing) {
+                  await env.DB.prepare(`
+                    INSERT INTO topics (keyword, source_id, score, metadata, status, site_config_id, fetched_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'pending', ?, strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
+                  `).bind(
+                    result.keyword,
+                    googleSource.id,
+                    result.score,
+                    JSON.stringify({ ...result.metadata, parent_keyword: keyword }),
+                    siteConfigId
+                  ).run();
+                  newCount++;
+                } else {
+                  duplicates++;
+                }
               }
+            } catch (error) {
+              console.error(`Error fetching trends for "${keyword}" (site: ${siteName}):`, error);
+            }
+          }
 
-              // Check if the result keyword contains any excluded terms
-              if (containsExcludedTerm(result.keyword)) {
-                excludedCount++;
-                console.log(`Excluded keyword "${result.keyword}" - contains excluded term`);
-                continue; // Skip this keyword if it contains excluded terms
+          return { fetched, new: newCount, duplicates, filtered, excluded };
+        };
+
+        const sites: Array<{
+          site_config_id: number;
+          site_name: string;
+          configs_processed: number;
+          total_fetched: number;
+          new_keywords: number;
+          duplicates: number;
+          excluded: number;
+        }> = [];
+
+        let totalFetched = 0;
+        let totalNew = 0;
+
+        // Case 1: Manual keywords (backward compatibility)
+        if (body.keywords && Array.isArray(body.keywords) && body.keywords.length > 0) {
+          const googleTrendsConfigStr = await getSetting(env.DB, 'google_trends_config');
+          const baseConfig = googleTrendsConfigStr 
+            ? JSON.parse(googleTrendsConfigStr) as GoogleTrendsConfig
+            : { geo: 'US', date: 'now 1-d', cat: '0' };
+
+          const configuredQuery = baseConfig.q?.toLowerCase().trim() || '';
+          const excludedKeywords = (baseConfig.excluded_keywords || []).map(k => k.toLowerCase().trim());
+
+          let siteFetched = 0;
+          let siteNew = 0;
+          let siteDuplicates = 0;
+          let siteFiltered = 0;
+          let siteExcluded = 0;
+
+          for (const keyword of body.keywords) {
+            const config: GoogleTrendsConfig = {
+              q: keyword.trim(),
+              geo: baseConfig.geo,
+              date: baseConfig.date,
+              cat: baseConfig.cat,
+            };
+
+            try {
+              const googleResults = await fetchGoogleTrends(serpApiKey, config);
+
+              for (const result of googleResults) {
+                siteFetched++;
+
+                if (!matchesConfiguredQuery(result.keyword, configuredQuery || null)) {
+                  siteFiltered++;
+                  continue;
+                }
+
+                if (containsExcludedTerm(result.keyword, excludedKeywords)) {
+                  siteExcluded++;
+                  continue;
+                }
+
+                const existing = await env.DB.prepare(
+                  'SELECT id FROM topics WHERE keyword = ? AND source_id = ?'
+                ).bind(result.keyword, googleSource.id).first();
+
+                if (!existing) {
+                  await env.DB.prepare(`
+                    INSERT INTO topics (keyword, source_id, score, metadata, status, fetched_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'pending', strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
+                  `).bind(
+                    result.keyword,
+                    googleSource.id,
+                    result.score,
+                    JSON.stringify({ ...result.metadata, parent_keyword: keyword })
+                  ).run();
+                  siteNew++;
+                } else {
+                  siteDuplicates++;
+                }
               }
+            } catch (error) {
+              console.error(`Error fetching trends for "${keyword}":`, error);
+            }
+          }
 
-              const existing = await env.DB.prepare(
-                'SELECT id FROM topics WHERE keyword = ? AND source_id = ?'
-              ).bind(result.keyword, googleSource.id).first();
+          totalFetched = siteFetched;
+          totalNew = siteNew;
 
-              if (!existing) {
-                await env.DB.prepare(`
-                  INSERT INTO topics (keyword, source_id, score, metadata, status, fetched_at, created_at, updated_at)
-                  VALUES (?, ?, ?, ?, 'pending', strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
-                `).bind(
-                  result.keyword,
-                  googleSource.id,
-                  result.score,
-                  JSON.stringify({ ...result.metadata, parent_keyword: keyword })
-                ).run();
-                newKeywords++;
-                keywordNew++;
-              } else {
-                duplicates++;
-              }
+          return addCorsHeaders(successResponse({
+            sites: [{
+              site_config_id: 0,
+              site_name: 'Manual',
+              configs_processed: 1,
+              total_fetched: siteFetched,
+              new_keywords: siteNew,
+              duplicates: siteDuplicates,
+              excluded: siteExcluded,
+            }],
+            summary: {
+              total_sites: 1,
+              total_fetched: siteFetched,
+              total_new: siteNew,
+            },
+          }));
+        }
+
+        // Case 2: Specific site
+        if (body.site_config_id) {
+          const siteConfig = await env.DB.prepare('SELECT * FROM site_configs WHERE id = ? AND is_active = 1')
+            .bind(body.site_config_id).first<SiteConfig>();
+
+          if (!siteConfig) {
+            throw new NotFoundError('Site config not found or inactive');
+          }
+
+          const trendConfigs = await env.DB.prepare(
+            'SELECT * FROM site_trend_configs WHERE site_config_id = ? AND is_active = 1'
+          ).bind(body.site_config_id).all<SiteTrendConfig>();
+
+          let siteFetched = 0;
+          let siteNew = 0;
+          let siteDuplicates = 0;
+          let siteFiltered = 0;
+          let siteExcluded = 0;
+
+          for (const trendConfig of trendConfigs.results) {
+            const result = await processTrendConfig(trendConfig, siteConfig.id, siteConfig.name);
+            siteFetched += result.fetched;
+            siteNew += result.new;
+            siteDuplicates += result.duplicates;
+            siteFiltered += result.filtered;
+            siteExcluded += result.excluded;
+          }
+
+          totalFetched = siteFetched;
+          totalNew = siteNew;
+
+          sites.push({
+            site_config_id: siteConfig.id,
+            site_name: siteConfig.name,
+            configs_processed: trendConfigs.results.length,
+            total_fetched: siteFetched,
+            new_keywords: siteNew,
+            duplicates: siteDuplicates,
+            excluded: siteExcluded,
+          });
+        }
+        // Case 3: All active sites
+        else if (body.all_sites) {
+          const siteConfigs = await env.DB.prepare('SELECT * FROM site_configs WHERE is_active = 1')
+            .all<SiteConfig>();
+
+          for (const siteConfig of siteConfigs.results) {
+            const trendConfigs = await env.DB.prepare(
+              'SELECT * FROM site_trend_configs WHERE site_config_id = ? AND is_active = 1'
+            ).bind(siteConfig.id).all<SiteTrendConfig>();
+
+            let siteFetched = 0;
+            let siteNew = 0;
+            let siteDuplicates = 0;
+            let siteFiltered = 0;
+            let siteExcluded = 0;
+
+            for (const trendConfig of trendConfigs.results) {
+              const result = await processTrendConfig(trendConfig, siteConfig.id, siteConfig.name);
+              siteFetched += result.fetched;
+              siteNew += result.new;
+              siteDuplicates += result.duplicates;
+              siteFiltered += result.filtered;
+              siteExcluded += result.excluded;
             }
 
-            totalFetched += googleResults.length;
-            results.push({ keyword, fetched: googleResults.length, new: keywordNew });
-          } catch (error) {
-            console.error(`Error fetching trends for "${keyword}":`, error);
-            results.push({ keyword, fetched: 0, new: 0 });
+            totalFetched += siteFetched;
+            totalNew += siteNew;
+
+            sites.push({
+              site_config_id: siteConfig.id,
+              site_name: siteConfig.name,
+              configs_processed: trendConfigs.results.length,
+              total_fetched: siteFetched,
+              new_keywords: siteNew,
+              duplicates: siteDuplicates,
+              excluded: siteExcluded,
+            });
           }
+        } else {
+          throw new BadRequestError('Either site_config_id, all_sites: true, or keywords array is required');
         }
 
         return addCorsHeaders(successResponse({
-          total_fetched: totalFetched,
-          new_keywords: newKeywords,
-          duplicates: duplicates,
-          filtered_out: filteredOut,
-          excluded: excludedCount,
-          keywords_processed: results,
-          config: { geo: baseConfig.geo, date: baseConfig.date, query: configuredQuery, excluded_keywords: excludedKeywords },
+          sites,
+          summary: {
+            total_sites: sites.length,
+            total_fetched: totalFetched,
+            total_new: totalNew,
+          },
         }));
       }
 
@@ -1541,7 +2017,22 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
         for (const topic of pendingTopics.results) {
           try {
-            // Check if output already exists
+            // Atomically try to claim this topic by updating status from 'pending' to 'processing'
+            // This prevents race conditions when multiple requests try to process the same topic
+            const claimResult = await env.DB.prepare(`
+              UPDATE topics SET status = 'processing', updated_at = strftime('%s', 'now') 
+              WHERE id = ? AND status = 'pending'
+            `).bind(topic.id).run();
+
+            // If no rows were updated, another process already claimed this topic
+            if (claimResult.meta.changes === 0) {
+              console.log(`Skipping "${topic.keyword}" - already being processed or completed`);
+              summary.skipped++;
+              summary.skipped_keywords.push(topic.keyword);
+              continue;
+            }
+
+            // Also check if output already exists (belt and suspenders)
             const existingOutput = await env.DB.prepare(
               'SELECT id FROM content_outputs WHERE topic_id = ? AND target = ?'
             ).bind(topic.id, 'site').first();
@@ -1550,19 +2041,14 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
               console.log(`Skipping "${topic.keyword}" - output already exists`);
               summary.skipped++;
               summary.skipped_keywords.push(topic.keyword);
-              // Update topic status if it's still pending but has output
+              // Update topic status to completed since output exists
               await env.DB.prepare(`
-                UPDATE topics SET status = 'completed', updated_at = strftime('%s', 'now') WHERE id = ? AND status = 'pending'
+                UPDATE topics SET status = 'completed', updated_at = strftime('%s', 'now') WHERE id = ?
               `).bind(topic.id).run();
               continue;
             }
 
             summary.processed_keywords.push(topic.keyword);
-
-            // Update topic status to processing
-            await env.DB.prepare(`
-              UPDATE topics SET status = 'processing', updated_at = strftime('%s', 'now') WHERE id = ?
-            `).bind(topic.id).run();
 
             // Get content strategy
             const strategy = await gemini.getContentStrategy(topic.keyword);
@@ -2070,7 +2556,20 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
         for (const topic of pendingTopics.results || []) {
           try {
-            // Check if output already exists for this topic (avoid duplicates)
+            // Atomically try to claim this topic by updating status from 'pending' to 'processing'
+            // This prevents race conditions when multiple requests try to process the same topic
+            const claimResult = await env.DB.prepare(`
+              UPDATE topics SET status = 'processing', updated_at = strftime('%s', 'now') 
+              WHERE id = ? AND status = 'pending'
+            `).bind(topic.id).run();
+
+            // If no rows were updated, another process already claimed this topic
+            if (claimResult.meta.changes === 0) {
+              console.log(`Skipping topic ${topic.keyword} - already being processed or completed`);
+              continue;
+            }
+
+            // Also check if output already exists (belt and suspenders)
             const existingOutput = await env.DB.prepare(
               'SELECT id FROM content_outputs WHERE topic_id = ? AND target = ?'
             ).bind(topic.id, 'site').first<{ id: number }>();
@@ -2096,7 +2595,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
               strategy: strategy,
             };
             await env.DB.prepare(`
-              UPDATE topics SET metadata = ?, status = 'processing', updated_at = strftime('%s', 'now')
+              UPDATE topics SET metadata = ?, updated_at = strftime('%s', 'now')
               WHERE id = ?
             `).bind(JSON.stringify(updatedMetadata), topic.id).run();
 

@@ -22,10 +22,12 @@ CREATE TABLE IF NOT EXISTS topics (
   category TEXT,
   metadata TEXT,
   status TEXT DEFAULT 'new',
+  site_config_id INTEGER,
   fetched_at INTEGER DEFAULT (strftime('%s', 'now')),
   created_at INTEGER DEFAULT (strftime('%s', 'now')),
   updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-  FOREIGN KEY (source_id) REFERENCES sources(id)
+  FOREIGN KEY (source_id) REFERENCES sources(id),
+  FOREIGN KEY (site_config_id) REFERENCES site_configs(id)
 );
 
 -- Accounts table
@@ -127,6 +129,34 @@ CREATE TABLE IF NOT EXISTS unsubscribe_sites (
   UNIQUE(subscriber_id, site_id)
 );
 
+-- Site configs table
+CREATE TABLE IF NOT EXISTS site_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  site_id TEXT NOT NULL UNIQUE,
+  api_key TEXT NOT NULL,
+  domain TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- Site trend configs table
+CREATE TABLE IF NOT EXISTS site_trend_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_config_id INTEGER NOT NULL,
+  keywords TEXT NOT NULL,
+  geo TEXT DEFAULT 'US',
+  cat TEXT DEFAULT '0',
+  date TEXT DEFAULT 'now 1-d',
+  excluded_keywords TEXT,
+  q_filter TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (site_config_id) REFERENCES site_configs(id) ON DELETE CASCADE
+);
+
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_topics_source_id ON topics(source_id);
 CREATE INDEX IF NOT EXISTS idx_topics_status ON topics(status);
@@ -143,6 +173,9 @@ CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
 CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);
 CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_subscriber ON unsubscribe_sites(subscriber_id);
 CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_site ON unsubscribe_sites(site_id);
+CREATE INDEX IF NOT EXISTS idx_topics_site_config_id ON topics(site_config_id);
+CREATE INDEX IF NOT EXISTS idx_site_trend_configs_site_config_id ON site_trend_configs(site_config_id);
+CREATE INDEX IF NOT EXISTS idx_site_trend_configs_active ON site_trend_configs(is_active);
 
 -- Insert default sources
 INSERT OR IGNORE INTO sources (name, config, is_active) VALUES 

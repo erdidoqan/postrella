@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Settings, Globe, TrendingUp, Save, TestTube, Link, CheckCircle, XCircle, X, Plus } from 'lucide-react';
+import { Settings, Globe, TrendingUp, Save, TestTube, Link, CheckCircle, XCircle, X, Plus, Trash2, Edit2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,8 +15,10 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 import workerClient from '@/lib/worker-client';
-import { GEO_OPTIONS, GOOGLE_TRENDS_DATE_OPTIONS, type GoogleTrendsDateValue } from '@/lib/types';
+import { GEO_OPTIONS, GOOGLE_TRENDS_DATE_OPTIONS, type GoogleTrendsDateValue, type SiteConfig, type SiteTrendConfig } from '@/lib/types';
 
 export default function SettingsPage() {
   // Site API settings
@@ -63,10 +65,29 @@ export default function SettingsPage() {
   const [newBoardName, setNewBoardName] = useState('');
   const [creatingBoard, setCreatingBoard] = useState(false);
 
+  // Site Configs state
+  const [siteConfigs, setSiteConfigs] = useState<SiteConfig[]>([]);
+  const [loadingSiteConfigs, setLoadingSiteConfigs] = useState(false);
+  const [expandedSiteId, setExpandedSiteId] = useState<number | null>(null);
+  const [editingSiteId, setEditingSiteId] = useState<number | null>(null);
+  const [newSiteConfig, setNewSiteConfig] = useState({ name: '', site_id: '', api_key: '', domain: '' });
+  const [creatingSite, setCreatingSite] = useState(false);
+  const [siteTrendConfigs, setSiteTrendConfigs] = useState<Record<number, SiteTrendConfig[]>>({});
+  const [editingTrendId, setEditingTrendId] = useState<{ siteId: number; trendId: number } | null>(null);
+  const [newTrendConfig, setNewTrendConfig] = useState<{ keywords: string; geo: string; cat: string; date: string; excluded_keywords: string; q_filter: string }>({
+    keywords: '',
+    geo: 'US',
+    cat: '0',
+    date: 'now 1-d',
+    excluded_keywords: '',
+    q_filter: '',
+  });
+
   useEffect(() => {
     loadSettings();
     loadPinterestAccount();
     loadMastodonAccount();
+    loadSiteConfigs();
   }, []);
 
   useEffect(() => {
@@ -182,9 +203,9 @@ export default function SettingsPage() {
   const handleTestTrendsFetch = async () => {
     setTestingTrends(true);
     try {
-      const result = await workerClient.fetchTrends();
+      const result = await workerClient.fetchTrends({ all_sites: true });
       if (result.success && result.data) {
-        alert(`Test successful! Fetched ${result.data.google_trends_count} Google Trends.`);
+        alert(`Test successful! Fetched ${result.data.summary.total_fetched} trends, ${result.data.summary.total_new} new keywords.`);
       }
     } catch (error) {
       console.error('Failed to test trends fetch:', error);
@@ -381,6 +402,133 @@ export default function SettingsPage() {
     }
   };
 
+  // Site Configs functions
+  const loadSiteConfigs = async () => {
+    setLoadingSiteConfigs(true);
+    try {
+      const result = await workerClient.getSiteConfigs();
+      if (result.success && result.data) {
+        setSiteConfigs(result.data);
+        // Load trend configs for each site
+        for (const site of result.data) {
+          loadSiteTrendConfigs(site.id);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load site configs:', error);
+    } finally {
+      setLoadingSiteConfigs(false);
+    }
+  };
+
+  const loadSiteTrendConfigs = async (siteId: number) => {
+    try {
+      const result = await workerClient.getSiteTrendConfigs(siteId);
+      if (result.success && result.data) {
+        setSiteTrendConfigs(prev => ({ ...prev, [siteId]: result.data! }));
+      }
+    } catch (error) {
+      console.error(`Failed to load trend configs for site ${siteId}:`, error);
+    }
+  };
+
+  const handleCreateSite = async () => {
+    if (!newSiteConfig.name || !newSiteConfig.site_id || !newSiteConfig.api_key) {
+      alert('Name, Site ID, and API Key are required');
+      return;
+    }
+    setCreatingSite(true);
+    try {
+      const result = await workerClient.createSiteConfig(newSiteConfig);
+      if (result.success && result.data) {
+        setSiteConfigs([...siteConfigs, result.data]);
+        setNewSiteConfig({ name: '', site_id: '', api_key: '', domain: '' });
+        alert('Site created successfully!');
+      }
+    } catch (error) {
+      console.error('Failed to create site:', error);
+      alert('Failed to create site.');
+    } finally {
+      setCreatingSite(false);
+    }
+  };
+
+  const handleDeleteSite = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this site?')) return;
+    try {
+      await workerClient.deleteSiteConfig(id);
+      setSiteConfigs(siteConfigs.filter(s => s.id !== id));
+      const newTrendConfigs = { ...siteTrendConfigs };
+      delete newTrendConfigs[id];
+      setSiteTrendConfigs(newTrendConfigs);
+      alert('Site deleted successfully!');
+    } catch (error) {
+      console.error('Failed to delete site:', error);
+      alert('Failed to delete site.');
+    }
+  };
+
+  const handleTestSite = async (id: number) => {
+    try {
+      const result = await workerClient.testSiteConfig(id);
+      if (result.success && result.data) {
+        alert(result.data.connected ? 'Connection successful!' : 'Connection failed');
+      }
+    } catch (error) {
+      console.error('Failed to test site:', error);
+      alert('Connection test failed.');
+    }
+  };
+
+  const handleCreateTrendConfig = async (siteId: number) => {
+    if (!newTrendConfig.keywords.trim()) {
+      alert('Keywords are required');
+      return;
+    }
+    try {
+      const keywords = newTrendConfig.keywords.split(',').map(k => k.trim()).filter(k => k);
+      const excluded = newTrendConfig.excluded_keywords 
+        ? newTrendConfig.excluded_keywords.split(',').map(k => k.trim()).filter(k => k)
+        : [];
+      
+      const result = await workerClient.createSiteTrendConfig(siteId, {
+        keywords,
+        geo: newTrendConfig.geo,
+        cat: newTrendConfig.cat,
+        date: newTrendConfig.date,
+        excluded_keywords: excluded.length > 0 ? excluded : undefined,
+        q_filter: newTrendConfig.q_filter || undefined,
+      });
+      
+      if (result.success && result.data) {
+        setSiteTrendConfigs(prev => ({
+          ...prev,
+          [siteId]: [...(prev[siteId] || []), result.data!],
+        }));
+        setNewTrendConfig({ keywords: '', geo: 'US', cat: '0', date: 'now 1-d', excluded_keywords: '', q_filter: '' });
+        alert('Trend config created successfully!');
+      }
+    } catch (error) {
+      console.error('Failed to create trend config:', error);
+      alert('Failed to create trend config.');
+    }
+  };
+
+  const handleDeleteTrendConfig = async (siteId: number, trendId: number) => {
+    if (!confirm('Are you sure you want to delete this trend config?')) return;
+    try {
+      await workerClient.deleteSiteTrendConfig(siteId, trendId);
+      setSiteTrendConfigs(prev => ({
+        ...prev,
+        [siteId]: (prev[siteId] || []).filter(t => t.id !== trendId),
+      }));
+      alert('Trend config deleted successfully!');
+    } catch (error) {
+      console.error('Failed to delete trend config:', error);
+      alert('Failed to delete trend config.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Page header */}
@@ -394,7 +542,15 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* Site API Configuration */}
+      <Tabs defaultValue="general" className="space-y-6">
+        <TabsList className="bg-zinc-900 border-zinc-800">
+          <TabsTrigger value="general" className="text-zinc-300 data-[state=active]:text-white">Genel</TabsTrigger>
+          <TabsTrigger value="sites" className="text-zinc-300 data-[state=active]:text-white">Site Konfigürasyonları</TabsTrigger>
+          <TabsTrigger value="api-keys" className="text-zinc-300 data-[state=active]:text-white">API Keys</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="general" className="space-y-6">
+          {/* Site API Configuration */}
       <Card className="border-zinc-800 bg-zinc-900/50">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-white">
@@ -480,526 +636,726 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+        </TabsContent>
 
-      {/* Google Trends Configuration */}
-      <Card className="border-zinc-800 bg-zinc-900/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <TrendingUp className="h-5 w-5 text-orange-400" />
-            Google Trends Configuration (SerpAPI)
-          </CardTitle>
-          <CardDescription className="text-zinc-400">
-            Configure your SerpAPI key and trend search parameters
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="serpapi_key" className="text-zinc-300">
-              SerpAPI API Key
-            </Label>
-            <Input
-              id="serpapi_key"
-              type="password"
-              value={serpApiKey}
-              onChange={(e) => setSerpApiKey(e.target.value)}
-              placeholder="Enter your SerpAPI key"
-              className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-            />
-          </div>
-
-          <Separator className="bg-zinc-800" />
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="trends_query" className="text-zinc-300">
-                Search Query (q)
-              </Label>
-              <Input
-                id="trends_query"
-                value={trendsQuery}
-                onChange={(e) => setTrendsQuery(e.target.value)}
-                placeholder="e.g., quotes, fitness, tech"
-                className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="trends_geo" className="text-zinc-300">
-                Geographic Region (geo)
-              </Label>
-              <Select value={trendsGeo} onValueChange={setTrendsGeo}>
-                <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="bg-zinc-900 border-zinc-700">
-                  {GEO_OPTIONS.map((opt) => (
-                    <SelectItem
-                      key={opt.value}
-                      value={opt.value}
-                      className="text-zinc-300 focus:bg-zinc-800"
-                    >
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="trends_date" className="text-zinc-300">
-                Date Range (date)
-              </Label>
-              <Select
-                value={trendsDate}
-                onValueChange={(v) => setTrendsDate(v as GoogleTrendsDateValue)}
-              >
-                <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="bg-zinc-900 border-zinc-700">
-                  {GOOGLE_TRENDS_DATE_OPTIONS.map((opt) => (
-                    <SelectItem
-                      key={opt.value}
-                      value={opt.value}
-                      className="text-zinc-300 focus:bg-zinc-800"
-                    >
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="trends_category" className="text-zinc-300">
-                Category (cat)
-              </Label>
-              <Input
-                id="trends_category"
-                value={trendsCategory}
-                onChange={(e) => setTrendsCategory(e.target.value)}
-                placeholder="e.g., 0, 14, 45"
-                className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-              />
-            </div>
-          </div>
-
-          <Separator className="bg-zinc-800" />
-
-          {/* Excluded Keywords */}
-          <div className="space-y-3">
-            <Label className="text-zinc-300">
-              Excluded Keywords
-            </Label>
-            <p className="text-sm text-zinc-500">
-              Keywords containing these terms will not be saved as topics
-            </p>
-
-            <div className="flex gap-2">
-              <Input
-                value={newExcludedKeyword}
-                onChange={(e) => setNewExcludedKeyword(e.target.value)}
-                placeholder="e.g., hindi, tamil, telugu"
-                className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddExcludedKeyword();
-                  }
-                }}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleAddExcludedKeyword}
-                disabled={!newExcludedKeyword.trim()}
-                className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-
-            {excludedKeywords.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {excludedKeywords.map((keyword) => (
-                  <Badge
-                    key={keyword}
-                    variant="outline"
-                    className="bg-red-500/10 text-red-400 border-red-500/30 gap-1 pr-1"
-                  >
-                    {keyword}
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveExcludedKeyword(keyword)}
-                      className="ml-1 hover:bg-red-500/20 rounded p-0.5"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Button
-              variant="outline"
-              onClick={handleTestTrendsFetch}
-              disabled={testingTrends}
-              className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
-            >
-              {testingTrends ? (
-                <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-zinc-400 border-t-white" />
-              ) : (
-                <TestTube className="mr-2 h-4 w-4" />
-              )}
-              Test Fetch
-            </Button>
-            <Button
-              onClick={handleSaveGoogleTrendsSettings}
-              disabled={savingTrends}
-              className="bg-violet-600 text-white hover:bg-violet-700"
-            >
-              {savingTrends ? (
-                <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              ) : (
-                <Save className="mr-2 h-4 w-4" />
-              )}
-              Save Configuration
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Gemini API Configuration */}
-      <Card className="border-zinc-800 bg-zinc-900/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <span className="text-2xl">✨</span>
-            Gemini AI Configuration
-          </CardTitle>
-          <CardDescription className="text-zinc-400">
-            Configure your Google Gemini API key for content generation
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="gemini_key" className="text-zinc-300">
-              Gemini API Key
-            </Label>
-            <Input
-              id="gemini_key"
-              type="password"
-              value={geminiApiKey}
-              onChange={(e) => setGeminiApiKey(e.target.value)}
-              placeholder="Enter your Gemini API key"
-              className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-            />
-          </div>
-
-          <Button
-            onClick={handleSaveGeminiSettings}
-            disabled={savingGemini}
-            className="bg-violet-600 text-white hover:bg-violet-700"
-          >
-            {savingGemini ? (
-              <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-            ) : (
-              <Save className="mr-2 h-4 w-4" />
-            )}
-            Save API Key
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Unosend Email Configuration */}
-      <Card className="border-zinc-800 bg-zinc-900/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <span className="text-2xl">📧</span>
-            Email Configuration (Unosend)
-          </CardTitle>
-          <CardDescription className="text-zinc-400">
-            Configure Unosend API key and sender email for newsletter mailing
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="unosend_api_key" className="text-zinc-300">
-              Unosend API Key
-            </Label>
-            <Input
-              id="unosend_api_key"
-              type="password"
-              value={unosendApiKey}
-              onChange={(e) => setUnosendApiKey(e.target.value)}
-              placeholder="Enter your Unosend API key"
-              className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="mailing_from_email" className="text-zinc-300">
-              From Email Address
-            </Label>
-            <Input
-              id="mailing_from_email"
-              type="email"
-              value={mailingFromEmail}
-              onChange={(e) => setMailingFromEmail(e.target.value)}
-              placeholder="[email protected]"
-              className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
-            />
-            <p className="text-xs text-zinc-500">
-              This email address will be used as the sender for newsletter emails
-            </p>
-          </div>
-
-          <Button
-            onClick={handleSaveUnosendSettings}
-            disabled={savingUnosend}
-            className="bg-violet-600 text-white hover:bg-violet-700"
-          >
-            {savingUnosend ? (
-              <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-            ) : (
-              <Save className="mr-2 h-4 w-4" />
-            )}
-            Save Settings
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Pinterest Board Mapping */}
-      <Card className="border-zinc-800 bg-zinc-900/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <svg className="h-5 w-5 text-red-400" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 0C5.373 0 0 5.372 0 12c0 5.084 3.163 9.426 7.627 11.174-.105-.949-.2-2.405.042-3.441.218-.937 1.407-5.965 1.407-5.965s-.359-.719-.359-1.782c0-1.668.967-2.914 2.171-2.914 1.023 0 1.518.769 1.518 1.69 0 1.029-.655 2.568-.994 3.995-.283 1.194.599 2.169 1.777 2.169 2.133 0 3.772-2.249 3.772-5.495 0-2.873-2.064-4.882-5.012-4.882-3.414 0-5.418 2.561-5.418 5.207 0 1.031.397 2.138.893 2.738.098.119.112.224.083.345l-.333 1.36c-.053.22-.174.267-.402.161-1.499-.698-2.436-2.889-2.436-4.649 0-3.785 2.75-7.262 7.929-7.262 4.163 0 7.398 2.967 7.398 6.931 0 4.136-2.607 7.464-6.227 7.464-1.216 0-2.359-.631-2.75-1.378l-.748 2.853c-.271 1.043-1.002 2.35-1.492 3.146C9.57 23.812 10.763 24 12 24c6.627 0 12-5.373 12-12 0-6.628-5.373-12-12-12z" />
-            </svg>
-            Pinterest Board Mapping
-          </CardTitle>
-          <CardDescription className="text-zinc-400">
-            Map your site categories to Pinterest boards for auto-pinning
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {!pinterestConnected ? (
-            <p className="text-sm text-zinc-500">
-              Connect your Pinterest account first to configure board mappings.
-            </p>
-          ) : loadingBoards ? (
-            <div className="flex items-center justify-center py-4">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-violet-500"></div>
-            </div>
-          ) : (
-            <>
-              <div className="space-y-3">
-                {siteCategories.map((category) => (
-                  <div key={category.id} className="grid grid-cols-2 gap-3 items-center">
-                    <Label className="text-zinc-300">{category.name}</Label>
-                    <Select
-                      value={boardMappings[category.id] || ''}
-                      onValueChange={(value) => handleBoardMappingChange(category.id, value)}
-                    >
-                      <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300">
-                        <SelectValue placeholder="Select board" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-zinc-900 border-zinc-700">
-                        <SelectItem value="" className="text-zinc-300 focus:bg-zinc-800">
-                          No board (skip)
-                        </SelectItem>
-                        {pinterestBoards.map((board) => (
-                          <SelectItem
-                            key={board.id}
-                            value={board.id}
-                            className="text-zinc-300 focus:bg-zinc-800"
-                          >
-                            {board.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+        <TabsContent value="sites" className="space-y-6">
+          <Card className="border-zinc-800 bg-zinc-900/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Globe className="h-5 w-5 text-blue-400" />
+                Site Konfigürasyonları
+              </CardTitle>
+              <CardDescription className="text-zinc-400">
+                Birden fazla site için API bağlantıları ve trend ayarları yönetin
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Create New Site */}
+              <Card className="border-zinc-700 bg-zinc-800/50">
+                <CardHeader>
+                  <CardTitle className="text-white text-lg">Yeni Site Ekle</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label className="text-zinc-300">Site Adı</Label>
+                      <Input
+                        value={newSiteConfig.name}
+                        onChange={(e) => setNewSiteConfig({ ...newSiteConfig, name: e.target.value })}
+                        placeholder="Quotes Site"
+                        className="border-zinc-700 bg-zinc-800 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-zinc-300">Site ID</Label>
+                      <Input
+                        value={newSiteConfig.site_id}
+                        onChange={(e) => setNewSiteConfig({ ...newSiteConfig, site_id: e.target.value })}
+                        placeholder="site-123"
+                        className="border-zinc-700 bg-zinc-800 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-zinc-300">API Key</Label>
+                      <Input
+                        type="password"
+                        value={newSiteConfig.api_key}
+                        onChange={(e) => setNewSiteConfig({ ...newSiteConfig, api_key: e.target.value })}
+                        placeholder="API key"
+                        className="border-zinc-700 bg-zinc-800 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-zinc-300">Domain (Opsiyonel)</Label>
+                      <Input
+                        value={newSiteConfig.domain}
+                        onChange={(e) => setNewSiteConfig({ ...newSiteConfig, domain: e.target.value })}
+                        placeholder="quotes.example.com"
+                        className="border-zinc-700 bg-zinc-800 text-white"
+                      />
+                    </div>
                   </div>
-                ))}
-
-                <Separator className="bg-zinc-800" />
-
-                <div className="grid grid-cols-2 gap-3 items-center">
-                  <Label className="text-zinc-300 font-semibold">Default Board (Fallback)</Label>
-                  <Select
-                    value={boardMappings['default'] || ''}
-                    onValueChange={(value) => handleBoardMappingChange('default', value)}
+                  <Button
+                    onClick={handleCreateSite}
+                    disabled={creatingSite}
+                    className="bg-violet-600 text-white hover:bg-violet-700"
                   >
+                    {creatingSite ? 'Oluşturuluyor...' : 'Site Ekle'}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* Site List */}
+              {loadingSiteConfigs ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-violet-500"></div>
+                </div>
+              ) : siteConfigs.length === 0 ? (
+                <p className="text-zinc-400 text-center py-8">Henüz site eklenmemiş</p>
+              ) : (
+                <div className="space-y-4">
+                  {siteConfigs.map((site) => (
+                    <Card key={site.id} className="border-zinc-700 bg-zinc-800/50">
+                      <CardHeader>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <CardTitle className="text-white">{site.name}</CardTitle>
+                            <CardDescription className="text-zinc-400">
+                              {site.domain || site.site_id} {site.is_active ? '(Aktif)' : '(Pasif)'}
+                            </CardDescription>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleTestSite(site.id)}
+                              className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                            >
+                              <TestTube className="h-4 w-4 mr-1" />
+                              Test
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setExpandedSiteId(expandedSiteId === site.id ? null : site.id)}
+                              className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                            >
+                              {expandedSiteId === site.id ? (
+                                <ChevronUp className="h-4 w-4" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleDeleteSite(site.id)}
+                              className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      {expandedSiteId === site.id && (
+                        <CardContent className="space-y-4">
+                          {/* Trend Configs */}
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-zinc-300 font-semibold">Trend Konfigürasyonları</Label>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setNewTrendConfig({ keywords: '', geo: 'US', cat: '0', date: 'now 1-d', excluded_keywords: '', q_filter: '' });
+                                  setEditingTrendId(null);
+                                }}
+                                className="border-violet-500/30 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
+                              >
+                                <Plus className="h-4 w-4 mr-1" />
+                                Yeni Trend Config
+                              </Button>
+                            </div>
+
+                            {/* New Trend Config Form */}
+                            {editingTrendId === null && (
+                              <Card className="border-violet-500/30 bg-violet-500/10">
+                                <CardContent className="pt-4 space-y-3">
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                      <Label className="text-zinc-300 text-sm">Keywords (virgülle ayırın)</Label>
+                                      <Input
+                                        value={newTrendConfig.keywords}
+                                        onChange={(e) => setNewTrendConfig({ ...newTrendConfig, keywords: e.target.value })}
+                                        placeholder="quotes, wishes, birthday"
+                                        className="border-zinc-700 bg-zinc-800 text-white text-sm"
+                                      />
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label className="text-zinc-300 text-sm">Geo</Label>
+                                      <Select value={newTrendConfig.geo} onValueChange={(v) => setNewTrendConfig({ ...newTrendConfig, geo: v })}>
+                                        <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300 text-sm">
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-zinc-900 border-zinc-700">
+                                          {GEO_OPTIONS.map((opt) => (
+                                            <SelectItem key={opt.value} value={opt.value} className="text-zinc-300">
+                                              {opt.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label className="text-zinc-300 text-sm">Category (cat)</Label>
+                                      <Input
+                                        value={newTrendConfig.cat}
+                                        onChange={(e) => setNewTrendConfig({ ...newTrendConfig, cat: e.target.value })}
+                                        placeholder="0"
+                                        className="border-zinc-700 bg-zinc-800 text-white text-sm"
+                                      />
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label className="text-zinc-300 text-sm">Date</Label>
+                                      <Select value={newTrendConfig.date} onValueChange={(v) => setNewTrendConfig({ ...newTrendConfig, date: v })}>
+                                        <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300 text-sm">
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-zinc-900 border-zinc-700">
+                                          {GOOGLE_TRENDS_DATE_OPTIONS.map((opt) => (
+                                            <SelectItem key={opt.value} value={opt.value} className="text-zinc-300">
+                                              {opt.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label className="text-zinc-300 text-sm">Excluded Keywords (virgülle ayırın)</Label>
+                                      <Input
+                                        value={newTrendConfig.excluded_keywords}
+                                        onChange={(e) => setNewTrendConfig({ ...newTrendConfig, excluded_keywords: e.target.value })}
+                                        placeholder="adult, nsfw"
+                                        className="border-zinc-700 bg-zinc-800 text-white text-sm"
+                                      />
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label className="text-zinc-300 text-sm">Query Filter (q_filter)</Label>
+                                      <Input
+                                        value={newTrendConfig.q_filter}
+                                        onChange={(e) => setNewTrendConfig({ ...newTrendConfig, q_filter: e.target.value })}
+                                        placeholder="quotes"
+                                        className="border-zinc-700 bg-zinc-800 text-white text-sm"
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <Button
+                                      size="sm"
+                                      onClick={() => handleCreateTrendConfig(site.id)}
+                                      className="bg-violet-600 text-white hover:bg-violet-700"
+                                    >
+                                      Kaydet
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => setNewTrendConfig({ keywords: '', geo: 'US', cat: '0', date: 'now 1-d', excluded_keywords: '', q_filter: '' })}
+                                      className="border-zinc-700 bg-zinc-800 text-zinc-300"
+                                    >
+                                      İptal
+                                    </Button>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            )}
+
+                            {/* Existing Trend Configs */}
+                            {(siteTrendConfigs[site.id] || []).map((trend) => {
+                              const keywords = JSON.parse(trend.keywords) as string[];
+                              const excluded = trend.excluded_keywords ? JSON.parse(trend.excluded_keywords) as string[] : [];
+                              return (
+                                <Card key={trend.id} className="border-zinc-700 bg-zinc-800/50">
+                                  <CardContent className="pt-4">
+                                    <div className="flex items-start justify-between">
+                                      <div className="space-y-2 flex-1">
+                                        <div className="flex items-center gap-2">
+                                          <Badge variant="outline" className="bg-blue-500/20 text-blue-400 border-blue-500/30">
+                                            {keywords.join(', ')}
+                                          </Badge>
+                                          <span className="text-zinc-400 text-sm">Geo: {trend.geo}</span>
+                                          <span className="text-zinc-400 text-sm">Cat: {trend.cat}</span>
+                                          <span className="text-zinc-400 text-sm">Date: {trend.date}</span>
+                                        </div>
+                                        {trend.q_filter && (
+                                          <p className="text-zinc-400 text-sm">Filter: {trend.q_filter}</p>
+                                        )}
+                                        {excluded.length > 0 && (
+                                          <div className="flex flex-wrap gap-1">
+                                            <span className="text-zinc-400 text-sm">Excluded:</span>
+                                            {excluded.map((k, i) => (
+                                              <Badge key={i} variant="outline" className="bg-red-500/20 text-red-400 border-red-500/30 text-xs">
+                                                {k}
+                                              </Badge>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => handleDeleteTrendConfig(site.id, trend.id)}
+                                        className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              );
+                            })}
+                          </div>
+                        </CardContent>
+                      )}
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="api-keys" className="space-y-6">
+          {/* Google Trends / SerpAPI Configuration */}
+          <Card className="border-zinc-800 bg-zinc-900/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white">
+                <TrendingUp className="h-5 w-5 text-green-400" />
+                Google Trends (SerpAPI)
+              </CardTitle>
+              <CardDescription className="text-zinc-400">
+                Configure SerpAPI for Google Trends data
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="serpapi_key" className="text-zinc-300">
+                  SerpAPI Key
+                </Label>
+                <Input
+                  id="serpapi_key"
+                  type="password"
+                  value={serpApiKey}
+                  onChange={(e) => setSerpApiKey(e.target.value)}
+                  placeholder="Enter your SerpAPI key"
+                  className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                />
+              </div>
+
+              <Separator className="bg-zinc-800" />
+
+              <div className="space-y-2">
+                <Label htmlFor="trends_query" className="text-zinc-300">
+                  Default Query Keywords (q)
+                </Label>
+                <Input
+                  id="trends_query"
+                  value={trendsQuery}
+                  onChange={(e) => setTrendsQuery(e.target.value)}
+                  placeholder="e.g., quotes, fitness, tech"
+                  className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="trends_geo" className="text-zinc-300">
+                    Geographic Region (geo)
+                  </Label>
+                  <Select value={trendsGeo} onValueChange={setTrendsGeo}>
                     <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300">
-                      <SelectValue placeholder="Select default board" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="bg-zinc-900 border-zinc-700">
-                      {pinterestBoards.map((board) => (
+                      {GEO_OPTIONS.map((opt) => (
                         <SelectItem
-                          key={board.id}
-                          value={board.id}
+                          key={opt.value}
+                          value={opt.value}
                           className="text-zinc-300 focus:bg-zinc-800"
                         >
-                          {board.name}
+                          {opt.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="trends_date" className="text-zinc-300">
+                    Time Range (date)
+                  </Label>
+                  <Select value={trendsDate} onValueChange={(v) => setTrendsDate(v as GoogleTrendsDateValue)}>
+                    <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-zinc-900 border-zinc-700">
+                      {GOOGLE_TRENDS_DATE_OPTIONS.map((opt) => (
+                        <SelectItem
+                          key={opt.value}
+                          value={opt.value}
+                          className="text-zinc-300 focus:bg-zinc-800"
+                        >
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="trends_category" className="text-zinc-300">
+                    Category (cat)
+                  </Label>
+                  <Input
+                    id="trends_category"
+                    value={trendsCategory}
+                    onChange={(e) => setTrendsCategory(e.target.value)}
+                    placeholder="0 = All Categories"
+                    className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-zinc-300">Excluded Keywords</Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={newExcludedKeyword}
+                    onChange={(e) => setNewExcludedKeyword(e.target.value)}
+                    placeholder="Add keyword to exclude"
+                    className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddExcludedKeyword()}
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={handleAddExcludedKeyword}
+                    className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+                {excludedKeywords.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {excludedKeywords.map((keyword) => (
+                      <Badge
+                        key={keyword}
+                        variant="outline"
+                        className="bg-red-500/20 text-red-400 border-red-500/30"
+                      >
+                        {keyword}
+                        <button
+                          onClick={() => handleRemoveExcludedKeyword(keyword)}
+                          className="ml-1 hover:text-red-300"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  onClick={handleTestTrendsFetch}
+                  disabled={testingTrends}
+                  className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
+                >
+                  {testingTrends ? (
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-zinc-400 border-t-white" />
+                  ) : (
+                    <TestTube className="mr-2 h-4 w-4" />
+                  )}
+                  Test Fetch
+                </Button>
+                <Button
+                  onClick={handleSaveGoogleTrendsSettings}
+                  disabled={savingTrends}
+                  className="bg-violet-600 text-white hover:bg-violet-700"
+                >
+                  {savingTrends ? (
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  ) : (
+                    <Save className="mr-2 h-4 w-4" />
+                  )}
+                  Save
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Gemini API Configuration */}
+          <Card className="border-zinc-800 bg-zinc-900/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Settings className="h-5 w-5 text-purple-400" />
+                Gemini API
+              </CardTitle>
+              <CardDescription className="text-zinc-400">
+                Configure Google Gemini for AI content generation
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="gemini_api_key" className="text-zinc-300">
+                  Gemini API Key
+                </Label>
+                <Input
+                  id="gemini_api_key"
+                  type="password"
+                  value={geminiApiKey}
+                  onChange={(e) => setGeminiApiKey(e.target.value)}
+                  placeholder="Enter your Gemini API key"
+                  className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                />
               </div>
 
               <Button
-                onClick={handleSaveBoardMappings}
-                disabled={savingBoardMappings}
+                onClick={handleSaveGeminiSettings}
+                disabled={savingGemini}
                 className="bg-violet-600 text-white hover:bg-violet-700"
               >
-                {savingBoardMappings ? (
+                {savingGemini ? (
                   <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                 ) : (
                   <Save className="mr-2 h-4 w-4" />
                 )}
-                Save Board Mappings
+                Save
               </Button>
+            </CardContent>
+          </Card>
 
-              <Separator className="bg-zinc-800" />
-
-              {/* Create New Board */}
-              <div className="space-y-2">
-                <Label className="text-zinc-300 font-semibold">Create New Board</Label>
-                <div className="flex gap-2">
+          {/* Unosend Email Configuration */}
+          <Card className="border-zinc-800 bg-zinc-900/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Settings className="h-5 w-5 text-orange-400" />
+                Unosend Email
+              </CardTitle>
+              <CardDescription className="text-zinc-400">
+                Configure Unosend for email sending
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="unosend_api_key" className="text-zinc-300">
+                    Unosend API Key
+                  </Label>
                   <Input
-                    value={newBoardName}
-                    onChange={(e) => setNewBoardName(e.target.value)}
-                    placeholder="Enter board name"
+                    id="unosend_api_key"
+                    type="password"
+                    value={unosendApiKey}
+                    onChange={(e) => setUnosendApiKey(e.target.value)}
+                    placeholder="Enter your Unosend API key"
                     className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
                   />
-                  <Button
-                    onClick={handleCreateBoard}
-                    disabled={creatingBoard || !newBoardName.trim()}
-                    variant="outline"
-                    className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 whitespace-nowrap"
-                  >
-                    {creatingBoard ? (
-                      <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-red-400/30 border-t-red-400" />
-                    ) : (
-                      <span className="mr-1">+</span>
-                    )}
-                    Create Board
-                  </Button>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="mailing_from_email" className="text-zinc-300">
+                    From Email Address
+                  </Label>
+                  <Input
+                    id="mailing_from_email"
+                    type="email"
+                    value={mailingFromEmail}
+                    onChange={(e) => setMailingFromEmail(e.target.value)}
+                    placeholder="noreply@example.com"
+                    className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                  />
                 </div>
               </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
 
-      {/* Connected Accounts */}
-      <Card className="border-zinc-800 bg-zinc-900/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <Link className="h-5 w-5 text-violet-400" />
-            Connected Accounts
-          </CardTitle>
-          <CardDescription className="text-zinc-400">
-            Connect your social media accounts for publishing
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* X Account */}
-          <div className="flex items-center justify-between rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg bg-sky-500/20 p-2">
-                <svg className="h-5 w-5 text-sky-400" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium text-white">X (Twitter)</p>
-                <p className="text-sm text-zinc-400">Not connected</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              className="border-sky-500/30 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20"
-            >
-              Connect X
-            </Button>
-          </div>
+              <Button
+                onClick={handleSaveUnosendSettings}
+                disabled={savingUnosend}
+                className="bg-violet-600 text-white hover:bg-violet-700"
+              >
+                {savingUnosend ? (
+                  <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                Save
+              </Button>
+            </CardContent>
+          </Card>
 
-          {/* Reddit Account */}
-          <div className="flex items-center justify-between rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg bg-orange-500/20 p-2">
-                <svg className="h-5 w-5 text-orange-400" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium text-white">Reddit</p>
-                <p className="text-sm text-zinc-400">Not connected</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              className="border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20"
-            >
-              Connect Reddit
-            </Button>
-          </div>
+          {/* Pinterest Configuration */}
+          <Card className="border-zinc-800 bg-zinc-900/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Link className="h-5 w-5 text-red-400" />
+                Pinterest
+              </CardTitle>
+              <CardDescription className="text-zinc-400">
+                Connect your Pinterest account
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {pinterestConnected ? (
+                <>
+                  <div className="flex items-center gap-3">
+                    <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
+                      <CheckCircle className="mr-1 h-3 w-3" />
+                      Connected as @{pinterestUsername}
+                    </Badge>
+                  </div>
 
-          {/* Pinterest Account */}
-          <div className="flex items-center justify-between rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg bg-red-500/20 p-2">
-                <svg className="h-5 w-5 text-red-400" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 0C5.373 0 0 5.372 0 12c0 5.084 3.163 9.426 7.627 11.174-.105-.949-.2-2.405.042-3.441.218-.937 1.407-5.965 1.407-5.965s-.359-.719-.359-1.782c0-1.668.967-2.914 2.171-2.914 1.023 0 1.518.769 1.518 1.69 0 1.029-.655 2.568-.994 3.995-.283 1.194.599 2.169 1.777 2.169 2.133 0 3.772-2.249 3.772-5.495 0-2.873-2.064-4.882-5.012-4.882-3.414 0-5.418 2.561-5.418 5.207 0 1.031.397 2.138.893 2.738.098.119.112.224.083.345l-.333 1.36c-.053.22-.174.267-.402.161-1.499-.698-2.436-2.889-2.436-4.649 0-3.785 2.75-7.262 7.929-7.262 4.163 0 7.398 2.967 7.398 6.931 0 4.136-2.607 7.464-6.227 7.464-1.216 0-2.359-.631-2.75-1.378l-.748 2.853c-.271 1.043-1.002 2.35-1.492 3.146C9.57 23.812 10.763 24 12 24c6.627 0 12-5.373 12-12 0-6.628-5.373-12-12-12z" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium text-white">Pinterest</p>
-                <p className="text-sm text-zinc-400">
-                  {pinterestConnected ? `Connected as ${pinterestUsername}` : 'Not connected'}
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={handlePinterestConnect}
-              disabled={connectingPinterest}
-              className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20"
-            >
-              {pinterestConnected ? 'Reconnect' : connectingPinterest ? 'Connecting...' : 'Connect Pinterest'}
-            </Button>
-          </div>
+                  {/* Board Mappings */}
+                  {loadingBoards ? (
+                    <div className="flex items-center justify-center py-4">
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-violet-500"></div>
+                    </div>
+                  ) : (
+                    <>
+                      <Separator className="bg-zinc-800" />
+                      <div className="space-y-4">
+                        <Label className="text-zinc-300 font-semibold">
+                          Category → Board Mappings
+                        </Label>
+                        <p className="text-zinc-500 text-sm">
+                          Map your site categories to Pinterest boards for automatic posting
+                        </p>
 
-          {/* Mastodon Account */}
-          <div className="flex items-center justify-between rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-lg bg-violet-500/20 p-2">
-                <svg className="h-5 w-5 text-violet-400" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M23.268 5.313c-.35-1.24-1.472-2.213-2.724-2.55C19.24 2.56 12 2.56 12 2.56s-7.24 0-8.544.203C2.203 3.1 1.082 4.073.73 5.313 0 7.62 0 12.005 0 12.005s0 4.384.73 6.692c.35 1.24 1.472 2.212 2.724 2.55 1.304.203 8.544.203 8.544.203s7.24 0 8.544-.203c1.253-.338 2.375-1.31 2.724-2.55.73-2.308.73-6.692.73-6.692s0-4.384-.73-6.692zm-13.462 7.403V8.288l6.266 3.47-6.266 3.47z"/>
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium text-white">Mastodon</p>
-                <p className="text-sm text-zinc-400">
-                  {mastodonConnected ? `Connected as ${mastodonUsername}` : 'Not connected'}
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={handleMastodonConnect}
-              disabled={connectingMastodon || mastodonConnected}
-              className="border-violet-500/30 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
-            >
-              {mastodonConnected ? 'Reconnect' : connectingMastodon ? 'Connecting...' : 'Connect Mastodon'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+                        {/* Create New Board */}
+                        <div className="flex gap-2">
+                          <Input
+                            value={newBoardName}
+                            onChange={(e) => setNewBoardName(e.target.value)}
+                            placeholder="New board name"
+                            className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                          />
+                          <Button
+                            variant="outline"
+                            onClick={handleCreateBoard}
+                            disabled={creatingBoard}
+                            className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                          >
+                            {creatingBoard ? (
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-400 border-t-white" />
+                            ) : (
+                              <Plus className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
+
+                        {siteCategories.length > 0 ? (
+                          <div className="space-y-3">
+                            {siteCategories.map((category) => (
+                              <div key={category.id} className="flex items-center gap-4">
+                                <span className="text-zinc-300 w-32 truncate">
+                                  {category.name}
+                                </span>
+                                <Select
+                                  value={boardMappings[category.id] || ''}
+                                  onValueChange={(v) => handleBoardMappingChange(category.id, v)}
+                                >
+                                  <SelectTrigger className="border-zinc-700 bg-zinc-800 text-zinc-300 flex-1">
+                                    <SelectValue placeholder="Select a board" />
+                                  </SelectTrigger>
+                                  <SelectContent className="bg-zinc-900 border-zinc-700">
+                                    {pinterestBoards.map((board) => (
+                                      <SelectItem
+                                        key={board.id}
+                                        value={board.id}
+                                        className="text-zinc-300 focus:bg-zinc-800"
+                                      >
+                                        {board.name}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-zinc-500 text-sm">
+                            No categories found. Configure your site first.
+                          </p>
+                        )}
+
+                        <Button
+                          onClick={handleSaveBoardMappings}
+                          disabled={savingBoardMappings}
+                          className="bg-violet-600 text-white hover:bg-violet-700"
+                        >
+                          {savingBoardMappings ? (
+                            <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                          ) : (
+                            <Save className="mr-2 h-4 w-4" />
+                          )}
+                          Save Mappings
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <Button
+                  onClick={handlePinterestConnect}
+                  disabled={connectingPinterest}
+                  className="bg-red-600 text-white hover:bg-red-700"
+                >
+                  {connectingPinterest ? (
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  ) : (
+                    <Link className="mr-2 h-4 w-4" />
+                  )}
+                  Connect Pinterest
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Mastodon Configuration */}
+          <Card className="border-zinc-800 bg-zinc-900/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Link className="h-5 w-5 text-purple-400" />
+                Mastodon
+              </CardTitle>
+              <CardDescription className="text-zinc-400">
+                Connect your Mastodon account
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {mastodonConnected ? (
+                <div className="flex items-center gap-3">
+                  <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
+                    <CheckCircle className="mr-1 h-3 w-3" />
+                    Connected as @{mastodonUsername}
+                  </Badge>
+                </div>
+              ) : (
+                <Button
+                  onClick={handleMastodonConnect}
+                  disabled={connectingMastodon}
+                  className="bg-purple-600 text-white hover:bg-purple-700"
+                >
+                  {connectingMastodon ? (
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  ) : (
+                    <Link className="mr-2 h-4 w-4" />
+                  )}
+                  Connect Mastodon
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
-

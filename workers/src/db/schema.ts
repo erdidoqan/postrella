@@ -23,10 +23,12 @@ CREATE TABLE IF NOT EXISTS topics (
   score REAL DEFAULT 0,
   metadata TEXT,
   status TEXT DEFAULT 'pending',
+  site_config_id INTEGER,
   fetched_at INTEGER DEFAULT (strftime('%s', 'now')),
   created_at INTEGER DEFAULT (strftime('%s', 'now')),
   updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-  FOREIGN KEY (source_id) REFERENCES sources(id)
+  FOREIGN KEY (source_id) REFERENCES sources(id),
+  FOREIGN KEY (site_config_id) REFERENCES site_configs(id)
 );
 CREATE INDEX IF NOT EXISTS idx_topics_status ON topics(status);
 CREATE INDEX IF NOT EXISTS idx_topics_score ON topics(score DESC);
@@ -141,6 +143,38 @@ CREATE TABLE IF NOT EXISTS unsubscribe_sites (
 CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_subscriber ON unsubscribe_sites(subscriber_id);
 CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_site ON unsubscribe_sites(site_id);
 
+-- Site configs table
+CREATE TABLE IF NOT EXISTS site_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  site_id TEXT NOT NULL UNIQUE,
+  api_key TEXT NOT NULL,
+  domain TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- Site trend configs table
+CREATE TABLE IF NOT EXISTS site_trend_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_config_id INTEGER NOT NULL,
+  keywords TEXT NOT NULL,
+  geo TEXT DEFAULT 'US',
+  cat TEXT DEFAULT '0',
+  date TEXT DEFAULT 'now 1-d',
+  excluded_keywords TEXT,
+  q_filter TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (site_config_id) REFERENCES site_configs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_site_config_id ON topics(site_config_id);
+CREATE INDEX IF NOT EXISTS idx_site_trend_configs_site_config_id ON site_trend_configs(site_config_id);
+CREATE INDEX IF NOT EXISTS idx_site_trend_configs_active ON site_trend_configs(is_active);
+
 -- Insert default sources
 INSERT OR IGNORE INTO sources (name, config, is_active) VALUES 
   ('pinterest_trends', '{}', 1),
@@ -165,6 +199,7 @@ export interface Topic {
   score: number;
   metadata: string | null;
   status: 'pending' | 'processing' | 'completed' | 'failed';
+  site_config_id: number | null;
   fetched_at: number;
   created_at: number;
   updated_at: number;
@@ -253,6 +288,31 @@ export interface UnsubscribeSite {
   subscriber_id: number;
   site_id: string;
   created_at: number;
+}
+
+export interface SiteConfig {
+  id: number;
+  name: string;
+  site_id: string;
+  api_key: string;
+  domain: string | null;
+  is_active: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SiteTrendConfig {
+  id: number;
+  site_config_id: number;
+  keywords: string; // JSON array
+  geo: string;
+  cat: string;
+  date: string;
+  excluded_keywords: string | null; // JSON array
+  q_filter: string | null;
+  is_active: number;
+  created_at: number;
+  updated_at: number;
 }
 
 // Parsed types

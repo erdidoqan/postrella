@@ -20,6 +20,14 @@ import type {
   PublishRequest,
   UpdateOutputRequest,
   UpdateGoogleTrendsConfigRequest,
+  SiteConfig,
+  SiteTrendConfig,
+  CreateSiteConfigRequest,
+  UpdateSiteConfigRequest,
+  CreateSiteTrendConfigRequest,
+  UpdateSiteTrendConfigRequest,
+  TrendsFetchRequest,
+  TrendsFetchResponse,
 } from './types';
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL || 'https://postrella.digitexa.com';
@@ -232,9 +240,72 @@ class WorkerClient {
     });
   }
 
+  // Site Configs
+  async getSiteConfigs(): Promise<ApiResponse<SiteConfig[]>> {
+    return this.request('/api/site-configs');
+  }
+
+  async getSiteConfig(id: number): Promise<ApiResponse<SiteConfig>> {
+    return this.request(`/api/site-configs/${id}`);
+  }
+
+  async createSiteConfig(request: CreateSiteConfigRequest): Promise<ApiResponse<SiteConfig>> {
+    return this.request('/api/site-configs', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async updateSiteConfig(id: number, request: UpdateSiteConfigRequest): Promise<ApiResponse<SiteConfig>> {
+    return this.request(`/api/site-configs/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteSiteConfig(id: number): Promise<ApiResponse<{ message: string }>> {
+    return this.request(`/api/site-configs/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async testSiteConfig(id: number): Promise<ApiResponse<{ connected: boolean; message: string }>> {
+    return this.request(`/api/site-configs/${id}/test`, {
+      method: 'POST',
+    });
+  }
+
+  // Site Trend Configs
+  async getSiteTrendConfigs(siteId: number): Promise<ApiResponse<SiteTrendConfig[]>> {
+    return this.request(`/api/site-configs/${siteId}/trends`);
+  }
+
+  async createSiteTrendConfig(siteId: number, request: CreateSiteTrendConfigRequest): Promise<ApiResponse<SiteTrendConfig>> {
+    return this.request(`/api/site-configs/${siteId}/trends`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async updateSiteTrendConfig(siteId: number, trendId: number, request: UpdateSiteTrendConfigRequest): Promise<ApiResponse<SiteTrendConfig>> {
+    return this.request(`/api/site-configs/${siteId}/trends/${trendId}`, {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteSiteTrendConfig(siteId: number, trendId: number): Promise<ApiResponse<{ message: string }>> {
+    return this.request(`/api/site-configs/${siteId}/trends/${trendId}`, {
+      method: 'DELETE',
+    });
+  }
+
   // Manual Triggers
-  async fetchTrends(): Promise<ApiResponse<{ pinterest_count: number; google_trends_count: number }>> {
-    return this.request('/api/trends/fetch', { method: 'POST' });
+  async fetchTrends(request?: TrendsFetchRequest): Promise<ApiResponse<TrendsFetchResponse>> {
+    return this.request('/api/trends/fetch', {
+      method: 'POST',
+      body: JSON.stringify(request || { keywords: [] }),
+    });
   }
 
   async runJobs(): Promise<ApiResponse<{ processed: number; failed: number }>> {

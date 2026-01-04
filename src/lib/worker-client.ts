@@ -66,6 +66,7 @@ class WorkerClient {
     if (filters?.source) params.set('source', filters.source);
     if (filters?.status) params.set('status', filters.status);
     if (filters?.minScore) params.set('minScore', String(filters.minScore));
+    if (filters?.keyword) params.set('keyword', filters.keyword);
     if (filters?.page) params.set('page', String(filters.page));
     if (filters?.limit) params.set('limit', String(filters.limit));
     
@@ -155,9 +156,23 @@ class WorkerClient {
     return this.request('/api/auth/pinterest/start', { method: 'POST' });
   }
 
+  async startMastodonAuth(instanceUrl: string): Promise<ApiResponse<{ auth_url: string }>> {
+    return this.request('/api/auth/mastodon/start', {
+      method: 'POST',
+      body: JSON.stringify({ instance_url: instanceUrl }),
+    });
+  }
+
   // Pinterest
   async getPinterestBoards(): Promise<ApiResponse<Array<{ id: string; name: string; description?: string; privacy: string }>>> {
     return this.request('/api/pinterest/boards');
+  }
+
+  async createPinterestBoard(name: string, description?: string, privacy?: 'PUBLIC' | 'PROTECTED' | 'SECRET'): Promise<ApiResponse<{ id: string; name: string; description?: string; privacy: string }>> {
+    return this.request('/api/pinterest/boards', {
+      method: 'POST',
+      body: JSON.stringify({ name, description, privacy }),
+    });
   }
 
   async getPinterestBoardMappings(): Promise<ApiResponse<Record<string, string>>> {
@@ -171,10 +186,28 @@ class WorkerClient {
     });
   }
 
-  async publishToPinterest(outputId: number, boardId?: string): Promise<ApiResponse<{ id: number; pin_id: string; url: string }>> {
+  async publishToPinterest(outputId: number, boardId?: string, imageUrl?: string, linkUrl?: string): Promise<ApiResponse<{ id: number; pin_id: string; url: string }>> {
     return this.request('/api/pinterest/publish', {
       method: 'POST',
-      body: JSON.stringify({ output_id: outputId, board_id: boardId }),
+      body: JSON.stringify({ output_id: outputId, board_id: boardId, image_url: imageUrl, link_url: linkUrl }),
+    });
+  }
+
+  // Mastodon
+  async publishToMastodon(
+    outputId: number,
+    visibility?: 'public' | 'unlisted' | 'private' | 'direct',
+    spoilerText?: string,
+    imageUrl?: string
+  ): Promise<ApiResponse<{ id: number; status_id: string; url: string }>> {
+    return this.request('/api/mastodon/publish', {
+      method: 'POST',
+      body: JSON.stringify({
+        output_id: outputId,
+        visibility,
+        spoiler_text: spoilerText,
+        image_url: imageUrl,
+      }),
     });
   }
 

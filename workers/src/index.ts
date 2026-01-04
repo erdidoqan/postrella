@@ -13,9 +13,12 @@ import { GeminiService, ContentStrategy } from './services/ai/gemini';
 import { publishToSite, testSiteConnection, fetchCategories, fetchTags, createCategory, createTag } from './services/publishers/site';
 import { publishToX } from './services/publishers/x';
 import { publishToReddit } from './services/publishers/reddit';
-import { publishToPinterest, getPinterestAuthUrl, exchangePinterestCode, getPinterestUser, fetchPinterestBoards } from './services/publishers/pinterest';
+import { publishToPinterest, getPinterestAuthUrl, exchangePinterestCode, getPinterestUser, fetchPinterestBoards, createPinterestBoard } from './services/publishers/pinterest';
+import { registerMastodonApp, getMastodonAuthUrl, exchangeMastodonCode, getMastodonUser, uploadMastodonMedia, publishToMastodon } from './services/publishers/mastodon';
 import { CloudinaryService } from './services/image/cloudinary';
 import { MediaService } from './services/publishers/media';
+import { sendEmail, sendBatchEmails } from './services/email/unosend';
+import { generateNewsletterTemplate, generateNewsletterText } from './services/email/template';
 
 export interface Env {
   DB: D1Database;
@@ -100,6 +103,27 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         return addCorsHeaders(successResponse({ message: 'Google Trends config updated' }));
       }
 
+      // Pinterest Board Mappings - Get (must be before generic settings routes)
+      if (path === '/api/settings/pinterest-board-mappings' && method === 'GET') {
+        const mappingsStr = await getSetting(env.DB, 'pinterest_board_mappings');
+        const mappings = mappingsStr ? JSON.parse(mappingsStr) : {};
+        return addCorsHeaders(successResponse(mappings));
+      }
+
+      // Pinterest Board Mappings - Update (must be before generic settings routes)
+      if (path === '/api/settings/pinterest-board-mappings' && method === 'PUT') {
+        const body = await request.json() as Record<string, string>;
+        // Filter out undefined/null values
+        const cleanedMappings: Record<string, string> = {};
+        for (const [key, value] of Object.entries(body)) {
+          if (value !== undefined && value !== null && value !== '') {
+            cleanedMappings[key] = value;
+          }
+        }
+        await setSetting(env.DB, 'pinterest_board_mappings', JSON.stringify(cleanedMappings));
+        return addCorsHeaders(successResponse({ message: 'Board mappings saved' }));
+      }
+
       if (path.match(/^\/api\/settings\/[\w-]+$/) && method === 'GET') {
         const key = path.split('/').pop()!;
         const value = await getSetting(env.DB, key);
@@ -119,6 +143,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         const source = url.searchParams.get('source');
         const status = url.searchParams.get('status');
         const minScore = url.searchParams.get('minScore');
+        const keyword = url.searchParams.get('keyword');
         const page = parseInt(url.searchParams.get('page') || '1');
         const limit = parseInt(url.searchParams.get('limit') || '20');
         const offset = (page - 1) * limit;
@@ -143,6 +168,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           query += ` AND t.score >= ?`;
           params.push(parseFloat(minScore));
         }
+        if (keyword) {
+          query += ` AND t.keyword LIKE ?`;
+          params.push(`%${keyword}%`);
+        }
 
         // Count total
         const countQuery = query.replace('SELECT t.*, s.name as source_name', 'SELECT COUNT(*) as count');
@@ -150,7 +179,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         const total = countResult?.count || 0;
 
         // Get paginated results
-        query += ` ORDER BY t.score DESC, t.fetched_at DESC LIMIT ? OFFSET ?`;
+        query += ` ORDER BY t.fetched_at DESC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
         const topics = await env.DB.prepare(query).bind(...params).all<Topic & { source_name: string }>();
@@ -579,6 +608,87 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
               await env.DB.prepare(`
                 UPDATE content_outputs SET status = 'published' WHERE id = ?
               `).bind(body.output_id).run();
+
+              // Mastodon auto-toot (non-blocking) - only for site publishes
+              if (body.platform === 'site' && publishResult.url) {
+                try {
+                  const mastodonAccount = await env.DB.prepare(
+                    'SELECT * FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1'
+                  ).bind('mastodon').first();
+
+                  if (mastodonAccount) {
+                    // Parse metadata to get instance URL and credentials
+                    const accountMetadata = mastodonAccount.metadata ? JSON.parse(mastodonAccount.metadata as string) : {};
+                    const instanceUrl = accountMetadata.instance_url;
+                    const clientId = accountMetadata.client_id;
+                    const clientSecret = accountMetadata.client_secret;
+
+                    if (instanceUrl && clientId && clientSecret) {
+                      console.log(`[Mastodon] Auto-tooting article: ${output.title || output.keyword}`);
+
+                      // Build status text
+                      let statusText = '';
+                      if (output.title) {
+                        statusText += `${output.title}\n\n`;
+                      }
+                      statusText += publishResult.url;
+
+                      // Upload media if featured image exists
+                      let mediaIds: string[] = [];
+                      const metadata = output.metadata ? JSON.parse(output.metadata) : {};
+                      const featuredImageUrl = metadata.featured_image_url;
+                      
+                      if (featuredImageUrl) {
+                        try {
+                          const imageDescription = metadata.seo_description || output.title || undefined;
+                          
+                          const mediaId = await uploadMastodonMedia({
+                            instanceUrl,
+                            accessToken: mastodonAccount.access_token as string,
+                            clientId,
+                            clientSecret,
+                          }, featuredImageUrl, imageDescription);
+                          
+                          mediaIds.push(mediaId);
+                          console.log(`[Mastodon] Media uploaded: ${mediaId}`);
+                        } catch (mediaError) {
+                          console.error('[Mastodon] Media upload failed, continuing without image:', mediaError);
+                        }
+                      }
+
+                      // Publish to Mastodon
+                      const statusResult = await publishToMastodon({
+                        instanceUrl,
+                        accessToken: mastodonAccount.access_token as string,
+                        clientId,
+                        clientSecret,
+                      }, {
+                        status: statusText,
+                        visibility: 'public',
+                        media_ids: mediaIds.length > 0 ? mediaIds : undefined,
+                      });
+
+                      // Save Mastodon publish record
+                      await env.DB.prepare(`
+                        INSERT INTO publishes (output_id, platform, account_id, status, remote_id, url, published_at, created_at, updated_at)
+                        VALUES (?, 'mastodon', ?, 'published', ?, ?, strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
+                      `).bind(
+                        body.output_id,
+                        mastodonAccount.id,
+                        statusResult.id,
+                        statusResult.url
+                      ).run();
+
+                      console.log(`[Mastodon] Status created: ${statusResult.url}`);
+                    } else {
+                      console.log(`[Mastodon] Account configuration incomplete, skipping auto-toot`);
+                    }
+                  }
+                } catch (mastodonError) {
+                  // Mastodon error should not block site publish
+                  console.error('[Mastodon] Auto-toot failed:', mastodonError);
+                }
+              }
             }
           } catch (error) {
             await env.DB.prepare(`
@@ -738,6 +848,144 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         return Response.redirect(`${frontendUrl}/settings?pinterest=connected`, 302);
       }
 
+      // Mastodon OAuth - Start
+      if (path === '/api/auth/mastodon/start' && method === 'POST') {
+        const body = await request.json() as { instance_url: string };
+        
+        if (!body.instance_url || !body.instance_url.trim()) {
+          throw new BadRequestError('Instance URL is required');
+        }
+
+        // Normalize instance URL
+        let instanceUrl = body.instance_url.trim();
+        if (!instanceUrl.startsWith('http://') && !instanceUrl.startsWith('https://')) {
+          instanceUrl = `https://${instanceUrl}`;
+        }
+
+        const origin = getRequestOrigin(request);
+        const redirectUri = `${new URL(request.url).origin}/api/auth/mastodon/callback`;
+        const state = crypto.randomUUID();
+
+        // Store state and instance URL in settings for validation
+        await setSetting(env.DB, `mastodon_oauth_state_${state}`, JSON.stringify({
+          instance_url: instanceUrl,
+          timestamp: Date.now(),
+        }));
+
+        try {
+          // Register app dynamically
+          const app = await registerMastodonApp(instanceUrl, redirectUri);
+
+          // Store app credentials temporarily with state
+          await setSetting(env.DB, `mastodon_app_${state}`, JSON.stringify({
+            client_id: app.client_id,
+            client_secret: app.client_secret,
+          }));
+
+          const authUrl = getMastodonAuthUrl(
+            instanceUrl,
+            app.client_id,
+            redirectUri,
+            state
+          );
+
+          return addCorsHeaders(successResponse({ auth_url: authUrl }));
+        } catch (error) {
+          console.error('Mastodon app registration error:', error);
+          throw new BadRequestError(`Failed to register with Mastodon instance: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      // Mastodon OAuth - Callback
+      if (path === '/api/auth/mastodon/callback' && method === 'GET') {
+        const url = new URL(request.url);
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+
+        if (!code || !state) {
+          throw new BadRequestError('Missing code or state');
+        }
+
+        // Validate state and get instance URL
+        const storedState = await getSetting(env.DB, `mastodon_oauth_state_${state}`);
+        if (!storedState) {
+          throw new BadRequestError('Invalid state parameter');
+        }
+
+        const stateData = JSON.parse(storedState) as { instance_url: string; timestamp: number };
+        const instanceUrl = stateData.instance_url;
+
+        // Get app credentials
+        const appDataStr = await getSetting(env.DB, `mastodon_app_${state}`);
+        if (!appDataStr) {
+          throw new BadRequestError('App credentials not found');
+        }
+
+        const appData = JSON.parse(appDataStr) as { client_id: string; client_secret: string };
+
+        // Delete used state and app data
+        await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`mastodon_oauth_state_${state}`).run();
+        await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`mastodon_app_${state}`).run();
+
+        const redirectUri = `${new URL(request.url).origin}/api/auth/mastodon/callback`;
+
+        // Exchange code for tokens
+        const tokens = await exchangeMastodonCode(
+          instanceUrl,
+          appData.client_id,
+          appData.client_secret,
+          code,
+          redirectUri
+        );
+
+        // Get user info
+        const user = await getMastodonUser(instanceUrl, tokens.accessToken);
+
+        // Save account to database with metadata
+        const accountMetadata = JSON.stringify({
+          instance_url: instanceUrl,
+          client_id: appData.client_id,
+          client_secret: appData.client_secret,
+        });
+
+        // Check if account exists
+        const existingAccount = await env.DB.prepare(
+          'SELECT id FROM accounts WHERE platform = ?'
+        ).bind('mastodon').first();
+
+        if (existingAccount) {
+          // Update existing account
+          await env.DB.prepare(`
+            UPDATE accounts
+            SET user_id = ?, username = ?, access_token = ?, metadata = ?,
+                is_active = 1, updated_at = strftime('%s', 'now')
+            WHERE platform = ?
+          `).bind(
+            user.id,
+            user.acct || user.username,
+            tokens.accessToken,
+            accountMetadata,
+            'mastodon'
+          ).run();
+        } else {
+          // Insert new account
+          await env.DB.prepare(`
+            INSERT INTO accounts (platform, user_id, username, access_token, metadata, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, strftime('%s', 'now'), strftime('%s', 'now'))
+          `).bind(
+            'mastodon',
+            user.id,
+            user.acct || user.username,
+            tokens.accessToken,
+            accountMetadata
+          ).run();
+        }
+
+        // Redirect to settings page
+        const frontendUrl = 'https://postrella.vercel.app';
+        return Response.redirect(`${frontendUrl}/settings?mastodon=connected`, 302);
+      }
+
       // Pinterest Boards - Fetch user's boards
       if (path === '/api/pinterest/boards' && method === 'GET') {
         const account = await env.DB.prepare(
@@ -762,45 +1010,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         return addCorsHeaders(successResponse(boards));
       }
 
-      // Pinterest Board Mappings - Get
-      if (path === '/api/settings/pinterest-board-mappings' && method === 'GET') {
-        const mappingsStr = await getSetting(env.DB, 'pinterest_board_mappings');
-        const mappings = mappingsStr ? JSON.parse(mappingsStr) : {};
-        return addCorsHeaders(successResponse(mappings));
-      }
-
-      // Pinterest Board Mappings - Update
-      if (path === '/api/settings/pinterest-board-mappings' && method === 'PUT') {
-        const body = await request.json() as Record<string, string>;
-        // Filter out undefined/null values
-        const cleanedMappings: Record<string, string> = {};
-        for (const [key, value] of Object.entries(body)) {
-          if (value !== undefined && value !== null && value !== '') {
-            cleanedMappings[key] = value;
-          }
-        }
-        await setSetting(env.DB, 'pinterest_board_mappings', JSON.stringify(cleanedMappings));
-        return addCorsHeaders(successResponse({ message: 'Board mappings saved' }));
-      }
-
-      // Pinterest Manual Publish
-      if (path === '/api/pinterest/publish' && method === 'POST') {
-        const body = await request.json() as { output_id: number; board_id?: string };
-
-        if (!body.output_id) {
-          throw new BadRequestError('output_id is required');
-        }
-
-        // Get output
-        const output = await env.DB.prepare(
-          'SELECT * FROM content_outputs WHERE id = ?'
-        ).bind(body.output_id).first();
-
-        if (!output) {
-          throw new NotFoundError('Output not found');
-        }
-
-        // Get Pinterest account
+      // Pinterest Boards - Create new board
+      if (path === '/api/pinterest/boards' && method === 'POST') {
         const account = await env.DB.prepare(
           'SELECT * FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1'
         ).bind('pinterest').first();
@@ -813,69 +1024,262 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           throw new BadRequestError('Pinterest credentials not configured');
         }
 
-        // Get board_id from parameter or mapping
-        let boardId = body.board_id;
-        if (!boardId) {
-          const metadata = JSON.parse(output.metadata as string);
-          const categoryId = metadata.category_ids?.[0];
-          const mappingsStr = await getSetting(env.DB, 'pinterest_board_mappings');
-          const mappings = mappingsStr ? JSON.parse(mappingsStr) : {};
-          boardId = mappings[categoryId] || mappings['default'];
+        const body = await request.json() as { name: string; description?: string; privacy?: 'PUBLIC' | 'PROTECTED' | 'SECRET' };
+        
+        if (!body.name || body.name.trim().length === 0) {
+          throw new BadRequestError('Board name is required');
         }
 
-        if (!boardId) {
-          throw new BadRequestError('No board configured for this content');
-        }
-
-        const metadata = JSON.parse(output.metadata as string);
-        const featuredImageUrl = metadata.featured_image_url;
-
-        if (!featuredImageUrl) {
-          throw new BadRequestError('Featured image is required for Pinterest');
-        }
-
-        // Get published URL from publishes table
-        const publishRecord = await env.DB.prepare(
-          'SELECT * FROM publishes WHERE output_id = ? AND platform = ? LIMIT 1'
-        ).bind(body.output_id, 'site').first();
-
-        if (!publishRecord || !publishRecord.url) {
-          throw new BadRequestError('Content must be published to site first');
-        }
-
-        // Publish to Pinterest
-        const pinResult = await publishToPinterest({
+        const board = await createPinterestBoard({
           accessToken: account.access_token as string,
           refreshToken: account.refresh_token as string,
           clientId: env.PINTEREST_CLIENT_ID,
           clientSecret: env.PINTEREST_CLIENT_SECRET,
         }, {
-          board_id: boardId,
-          title: output.title as string,
-          description: metadata.seo_description || '',
-          link: publishRecord.url as string,
-          media_source: {
-            source_type: 'image_url',
-            url: featuredImageUrl,
-          },
+          name: body.name.trim(),
+          description: body.description,
+          privacy: body.privacy || 'PUBLIC',
         });
 
-        // Save publish record
-        const publishResult = await env.DB.prepare(`
-          INSERT INTO publishes (output_id, platform, account_id, status, remote_id, url, published_at, created_at, updated_at)
-          VALUES (?, 'pinterest', ?, 'published', ?, ?, strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
-        `).bind(
-          body.output_id,
-          account.id,
-          pinResult.id,
-          pinResult.url
-        ).run();
+        return addCorsHeaders(successResponse(board));
+      }
 
-        return addCorsHeaders(successResponse({
-          id: publishResult.meta.last_row_id,
-          pin_id: pinResult.id,
-          url: pinResult.url,
-        }));
+      // Pinterest Manual Publish
+      if (path === '/api/pinterest/publish' && method === 'POST') {
+        try {
+          const body = await request.json() as { output_id: number; board_id?: string; image_url?: string; link_url?: string };
+          console.log('Pinterest publish request:', JSON.stringify(body));
+
+          if (!body.output_id) {
+            throw new BadRequestError('output_id is required');
+          }
+
+          // Get output
+          const output = await env.DB.prepare(
+            'SELECT * FROM content_outputs WHERE id = ?'
+          ).bind(body.output_id).first();
+
+          if (!output) {
+            throw new NotFoundError('Output not found');
+          }
+          console.log('Output found:', output.id, output.title);
+
+          // Get Pinterest account
+          const account = await env.DB.prepare(
+            'SELECT * FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1'
+          ).bind('pinterest').first();
+
+          if (!account) {
+            throw new BadRequestError('Pinterest account not connected');
+          }
+          console.log('Pinterest account found:', account.id);
+
+          if (!env.PINTEREST_CLIENT_ID || !env.PINTEREST_CLIENT_SECRET) {
+            throw new BadRequestError('Pinterest credentials not configured');
+          }
+
+          // Get board_id from parameter or mapping
+          let boardId = body.board_id;
+          const metadata = output.metadata ? JSON.parse(output.metadata as string) : {};
+          if (!boardId) {
+            const categoryId = metadata.category_ids?.[0];
+            const mappingsStr = await getSetting(env.DB, 'pinterest_board_mappings');
+            const mappings = mappingsStr ? JSON.parse(mappingsStr) : {};
+            boardId = mappings[categoryId] || mappings['default'];
+          }
+
+          if (!boardId) {
+            throw new BadRequestError('No board configured for this content');
+          }
+          console.log('Board ID:', boardId);
+
+          // Get featured image URL from parameter or metadata
+          const featuredImageUrl = body.image_url || metadata.featured_image_url;
+          console.log('Image URL:', featuredImageUrl);
+
+          if (!featuredImageUrl) {
+            throw new BadRequestError('Featured image is required for Pinterest');
+          }
+
+          // Get published URL from publishes table or parameter
+          let linkUrl = body.link_url;
+          if (!linkUrl) {
+            const publishRecord = await env.DB.prepare(
+              'SELECT * FROM publishes WHERE output_id = ? AND platform = ? LIMIT 1'
+            ).bind(body.output_id, 'site').first();
+
+            if (!publishRecord || !publishRecord.url) {
+              throw new BadRequestError('Content must be published to site first or provide a link_url');
+            }
+            linkUrl = publishRecord.url as string;
+          }
+          console.log('Link URL:', linkUrl);
+
+          // Publish to Pinterest
+          console.log('Calling Pinterest API...');
+          const pinResult = await publishToPinterest({
+            accessToken: account.access_token as string,
+            refreshToken: account.refresh_token as string,
+            clientId: env.PINTEREST_CLIENT_ID,
+            clientSecret: env.PINTEREST_CLIENT_SECRET,
+          }, {
+            board_id: boardId,
+            title: output.title as string,
+            description: metadata.seo_description || '',
+            link: linkUrl,
+            media_source: {
+              source_type: 'image_url',
+              url: featuredImageUrl,
+            },
+          });
+          console.log('Pinterest API result:', JSON.stringify(pinResult));
+
+          // Save publish record
+          const publishResult = await env.DB.prepare(`
+            INSERT INTO publishes (output_id, platform, account_id, status, remote_id, url, published_at, created_at, updated_at)
+            VALUES (?, 'pinterest', ?, 'published', ?, ?, strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
+          `).bind(
+            body.output_id,
+            account.id,
+            pinResult.id,
+            pinResult.url
+          ).run();
+
+          return addCorsHeaders(successResponse({
+            id: publishResult.meta.last_row_id,
+            pin_id: pinResult.id,
+            url: pinResult.url,
+          }));
+        } catch (error) {
+          console.error('Pinterest publish error:', error);
+          if (error instanceof BadRequestError || error instanceof NotFoundError) {
+            throw error;
+          }
+          throw new Error(`Pinterest publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      // Mastodon Manual Publish
+      if (path === '/api/mastodon/publish' && method === 'POST') {
+        try {
+          const body = await request.json() as { 
+            output_id: number; 
+            visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+            spoiler_text?: string;
+            image_url?: string;
+          };
+          console.log('Mastodon publish request:', JSON.stringify(body));
+
+          if (!body.output_id) {
+            throw new BadRequestError('output_id is required');
+          }
+
+          // Get output
+          const output = await env.DB.prepare(
+            'SELECT * FROM content_outputs WHERE id = ?'
+          ).bind(body.output_id).first();
+
+          if (!output) {
+            throw new NotFoundError('Output not found');
+          }
+          console.log('Output found:', output.id, output.title);
+
+          // Get Mastodon account
+          const account = await env.DB.prepare(
+            'SELECT * FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1'
+          ).bind('mastodon').first();
+
+          if (!account) {
+            throw new BadRequestError('Mastodon account not connected');
+          }
+          console.log('Mastodon account found:', account.id);
+
+          // Parse metadata to get instance URL and credentials
+          const accountMetadata = account.metadata ? JSON.parse(account.metadata as string) : {};
+          const instanceUrl = accountMetadata.instance_url;
+          const clientId = accountMetadata.client_id;
+          const clientSecret = accountMetadata.client_secret;
+
+          if (!instanceUrl || !clientId || !clientSecret) {
+            throw new BadRequestError('Mastodon account configuration incomplete');
+          }
+
+          // Build status text from output
+          let statusText = '';
+          if (output.title) {
+            statusText += `${output.title}\n\n`;
+          }
+          
+          // Get published URL from publishes table
+          const publishRecord = await env.DB.prepare(
+            'SELECT * FROM publishes WHERE output_id = ? AND platform = ? LIMIT 1'
+          ).bind(body.output_id, 'site').first();
+
+          if (publishRecord && publishRecord.url) {
+            statusText += `${publishRecord.url as string}`;
+          } else {
+            // Fallback to body content (truncated)
+            const bodyText = output.body || '';
+            const truncated = bodyText.length > 400 ? bodyText.substring(0, 397) + '...' : bodyText;
+            statusText += truncated;
+          }
+
+          // Upload media if image URL provided
+          let mediaIds: string[] = [];
+          if (body.image_url) {
+            console.log('Uploading media:', body.image_url);
+            const metadata = output.metadata ? JSON.parse(output.metadata as string) : {};
+            const imageDescription = metadata.seo_description || output.title || undefined;
+            
+            const mediaId = await uploadMastodonMedia({
+              instanceUrl,
+              accessToken: account.access_token as string,
+              clientId,
+              clientSecret,
+            }, body.image_url, imageDescription);
+            
+            mediaIds.push(mediaId);
+            console.log('Media uploaded:', mediaId);
+          }
+
+          // Publish to Mastodon
+          console.log('Calling Mastodon API...');
+          const statusResult = await publishToMastodon({
+            instanceUrl,
+            accessToken: account.access_token as string,
+            clientId,
+            clientSecret,
+          }, {
+            status: statusText,
+            visibility: body.visibility || 'public',
+            media_ids: mediaIds.length > 0 ? mediaIds : undefined,
+            spoiler_text: body.spoiler_text,
+          });
+          console.log('Mastodon API result:', JSON.stringify(statusResult));
+
+          // Save publish record
+          const publishResult = await env.DB.prepare(`
+            INSERT INTO publishes (output_id, platform, account_id, status, remote_id, url, published_at, created_at, updated_at)
+            VALUES (?, 'mastodon', ?, 'published', ?, ?, strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
+          `).bind(
+            body.output_id,
+            account.id,
+            statusResult.id,
+            statusResult.url
+          ).run();
+
+          return addCorsHeaders(successResponse({
+            id: publishResult.meta.last_row_id,
+            status_id: statusResult.id,
+            url: statusResult.url,
+          }));
+        } catch (error) {
+          console.error('Mastodon publish error:', error);
+          if (error instanceof BadRequestError || error instanceof NotFoundError) {
+            throw error;
+          }
+          throw new Error(`Mastodon publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
       }
 
 
@@ -920,6 +1324,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           ? JSON.parse(googleTrendsConfigStr) as GoogleTrendsConfig
           : { geo: 'US', date: 'now 1-d' };
 
+        // Get the configured search query for matching
+        const configuredQuery = baseConfig.q?.toLowerCase().trim() || '';
+        
+        // Get excluded keywords list
+        const excludedKeywords = (baseConfig.excluded_keywords || []).map(k => k.toLowerCase().trim());
+
         const googleSource = await env.DB.prepare(
           'SELECT id FROM sources WHERE name = ?'
         ).bind('google_trends').first<{ id: number }>();
@@ -931,7 +1341,29 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         let totalFetched = 0;
         let newKeywords = 0;
         let duplicates = 0;
+        let filteredOut = 0; // Keywords that don't match the configured query
+        let excludedCount = 0; // Keywords that contain excluded terms
         const results: Array<{ keyword: string; fetched: number; new: number }> = [];
+
+        // Helper function to check if a keyword matches the configured query
+        const matchesConfiguredQuery = (keyword: string): boolean => {
+          if (!configuredQuery) {
+            // If no query is configured, accept all keywords
+            return true;
+          }
+          const keywordLower = keyword.toLowerCase().trim();
+          // Check if keyword contains the configured query or vice versa
+          return keywordLower.includes(configuredQuery) || configuredQuery.includes(keywordLower);
+        };
+
+        // Helper function to check if a keyword contains any excluded terms
+        const containsExcludedTerm = (keyword: string): boolean => {
+          if (excludedKeywords.length === 0) {
+            return false;
+          }
+          const keywordLower = keyword.toLowerCase().trim();
+          return excludedKeywords.some(excluded => keywordLower.includes(excluded));
+        };
 
         // Fetch trends for each keyword
         for (const keyword of body.keywords) {
@@ -939,6 +1371,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             q: keyword.trim(),
             geo: baseConfig.geo,
             date: baseConfig.date,
+            cat: baseConfig.cat,
           };
 
           try {
@@ -946,6 +1379,19 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             let keywordNew = 0;
 
             for (const result of googleResults) {
+              // Check if the result keyword matches the configured search query
+              if (!matchesConfiguredQuery(result.keyword)) {
+                filteredOut++;
+                continue; // Skip this keyword if it doesn't match
+              }
+
+              // Check if the result keyword contains any excluded terms
+              if (containsExcludedTerm(result.keyword)) {
+                excludedCount++;
+                console.log(`Excluded keyword "${result.keyword}" - contains excluded term`);
+                continue; // Skip this keyword if it contains excluded terms
+              }
+
               const existing = await env.DB.prepare(
                 'SELECT id FROM topics WHERE keyword = ? AND source_id = ?'
               ).bind(result.keyword, googleSource.id).first();
@@ -979,8 +1425,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           total_fetched: totalFetched,
           new_keywords: newKeywords,
           duplicates: duplicates,
+          filtered_out: filteredOut,
+          excluded: excludedCount,
           keywords_processed: results,
-          config: { geo: baseConfig.geo, date: baseConfig.date },
+          config: { geo: baseConfig.geo, date: baseConfig.date, query: configuredQuery, excluded_keywords: excludedKeywords },
         }));
       }
 
@@ -1083,9 +1531,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
         const summary = {
           total_topics: pendingTopics.results.length,
+          skipped: 0,
           articles_generated: 0,
           articles_published: 0,
           errors: [] as string[],
+          processed_keywords: [] as string[],
+          skipped_keywords: [] as string[],
         };
 
         for (const topic of pendingTopics.results) {
@@ -1097,10 +1548,16 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
             if (existingOutput) {
               console.log(`Skipping "${topic.keyword}" - output already exists`);
-              summary.articles_generated++;
-              summary.articles_published++;
+              summary.skipped++;
+              summary.skipped_keywords.push(topic.keyword);
+              // Update topic status if it's still pending but has output
+              await env.DB.prepare(`
+                UPDATE topics SET status = 'completed', updated_at = strftime('%s', 'now') WHERE id = ? AND status = 'pending'
+              `).bind(topic.id).run();
               continue;
             }
+
+            summary.processed_keywords.push(topic.keyword);
 
             // Update topic status to processing
             await env.DB.prepare(`
@@ -1339,6 +1796,83 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
                 // Pinterest error should not block site publish
                 console.error('[Pinterest] Auto-pin failed:', pinterestError);
               }
+
+              // Mastodon auto-toot (non-blocking)
+              try {
+                const mastodonAccount = await env.DB.prepare(
+                  'SELECT * FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1'
+                ).bind('mastodon').first();
+
+                if (mastodonAccount) {
+                  // Parse metadata to get instance URL and credentials
+                  const accountMetadata = mastodonAccount.metadata ? JSON.parse(mastodonAccount.metadata as string) : {};
+                  const instanceUrl = accountMetadata.instance_url;
+                  const clientId = accountMetadata.client_id;
+                  const clientSecret = accountMetadata.client_secret;
+
+                  if (instanceUrl && clientId && clientSecret) {
+                    console.log(`[Mastodon] Auto-tooting article: ${article.title}`);
+
+                    // Build status text
+                    let statusText = '';
+                    if (article.title) {
+                      statusText += `${article.title}\n\n`;
+                    }
+                    statusText += publishResult.url;
+
+                    // Upload media if featured image exists
+                    let mediaIds: string[] = [];
+                    if (featuredImageUrl) {
+                      try {
+                        const metadata = output.metadata ? JSON.parse(output.metadata as string) : {};
+                        const imageDescription = metadata.seo_description || article.title || undefined;
+                        
+                        const mediaId = await uploadMastodonMedia({
+                          instanceUrl,
+                          accessToken: mastodonAccount.access_token as string,
+                          clientId,
+                          clientSecret,
+                        }, featuredImageUrl, imageDescription);
+                        
+                        mediaIds.push(mediaId);
+                        console.log(`[Mastodon] Media uploaded: ${mediaId}`);
+                      } catch (mediaError) {
+                        console.error('[Mastodon] Media upload failed, continuing without image:', mediaError);
+                      }
+                    }
+
+                    // Publish to Mastodon
+                    const statusResult = await publishToMastodon({
+                      instanceUrl,
+                      accessToken: mastodonAccount.access_token as string,
+                      clientId,
+                      clientSecret,
+                    }, {
+                      status: statusText,
+                      visibility: 'public',
+                      media_ids: mediaIds.length > 0 ? mediaIds : undefined,
+                    });
+
+                    // Save Mastodon publish record
+                    await env.DB.prepare(`
+                      INSERT INTO publishes (output_id, platform, account_id, status, remote_id, url, published_at, created_at, updated_at)
+                      VALUES (?, 'mastodon', ?, 'published', ?, ?, strftime('%s', 'now'), strftime('%s', 'now'), strftime('%s', 'now'))
+                    `).bind(
+                      outputResult.meta.last_row_id,
+                      mastodonAccount.id,
+                      statusResult.id,
+                      statusResult.url
+                    ).run();
+
+                    console.log(`[Mastodon] Status created: ${statusResult.url}`);
+                  } else {
+                    console.log(`[Mastodon] Account configuration incomplete, skipping auto-toot`);
+                  }
+                }
+              } catch (mastodonError) {
+                // Mastodon error should not block site publish
+                console.error('[Mastodon] Auto-toot failed:', mastodonError);
+              }
             } catch (publishError) {
               console.error(`Publish error for "${topic.keyword}":`, publishError);
               await env.DB.prepare(`
@@ -1467,6 +2001,29 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         const googleTrendsConfigStr = await getSetting(env.DB, 'google_trends_config');
         if (serpApiKey && googleTrendsConfigStr) {
           const googleTrendsConfig = JSON.parse(googleTrendsConfigStr) as GoogleTrendsConfig;
+          const configuredQuery = googleTrendsConfig.q?.toLowerCase().trim() || '';
+          const excludedKeywords = (googleTrendsConfig.excluded_keywords || []).map(k => k.toLowerCase().trim());
+          
+          // Helper function to check if a keyword matches the configured query
+          const matchesConfiguredQuery = (keyword: string): boolean => {
+            if (!configuredQuery) {
+              // If no query is configured, accept all keywords
+              return true;
+            }
+            const keywordLower = keyword.toLowerCase().trim();
+            // Check if keyword contains the configured query or vice versa
+            return keywordLower.includes(configuredQuery) || configuredQuery.includes(keywordLower);
+          };
+
+          // Helper function to check if a keyword contains any excluded terms
+          const containsExcludedTerm = (keyword: string): boolean => {
+            if (excludedKeywords.length === 0) {
+              return false;
+            }
+            const keywordLower = keyword.toLowerCase().trim();
+            return excludedKeywords.some(excluded => keywordLower.includes(excluded));
+          };
+
           const googleSource = await env.DB.prepare(
             'SELECT id FROM sources WHERE name = ?'
           ).bind('google_trends').first<{ id: number }>();
@@ -1474,6 +2031,17 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           if (googleSource) {
             const googleResults = await fetchGoogleTrends(serpApiKey, googleTrendsConfig);
             for (const result of googleResults) {
+              // Check if the result keyword matches the configured search query
+              if (!matchesConfiguredQuery(result.keyword)) {
+                continue; // Skip this keyword if it doesn't match
+              }
+
+              // Check if the result keyword contains any excluded terms
+              if (containsExcludedTerm(result.keyword)) {
+                console.log(`[Pipeline] Excluded keyword "${result.keyword}" - contains excluded term`);
+                continue; // Skip this keyword if it contains excluded terms
+              }
+
               // Check for duplicates
               const existing = await env.DB.prepare(
                 'SELECT id FROM topics WHERE keyword = ? AND source_id = ?'
@@ -1693,6 +2261,230 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
         const connected = await testSiteConnection({ siteId, apiKey: siteApiKey });
         return addCorsHeaders(successResponse({ connected }));
+      }
+
+      // Mailing - Unsubscribe (GET)
+      if (path === '/api/mailing/unsubscribe' && method === 'GET') {
+        const email = url.searchParams.get('email');
+        const siteId = url.searchParams.get('site_id');
+
+        if (!email || !siteId) {
+          throw new BadRequestError('Email and site_id are required');
+        }
+
+        // Find subscriber by email
+        const subscriber = await env.DB.prepare('SELECT id FROM subscribers WHERE email = ? AND is_active = 1').bind(email).first<{ id: number }>();
+
+        if (!subscriber) {
+          // Return success even if subscriber not found (privacy)
+          return addCorsHeaders(successResponse({ message: 'Unsubscribed successfully' }));
+        }
+
+        // Insert unsubscribe record (ignore if already exists)
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO unsubscribe_sites (subscriber_id, site_id, created_at)
+          VALUES (?, ?, strftime('%s', 'now'))
+        `).bind(subscriber.id, siteId).run();
+
+        return addCorsHeaders(successResponse({ message: 'Unsubscribed successfully' }));
+      }
+
+      // Mailing - Unsubscribe (POST)
+      if (path === '/api/mailing/unsubscribe' && method === 'POST') {
+        const body = await request.json() as { email: string; site_id: string };
+
+        if (!body.email || !body.site_id) {
+          throw new BadRequestError('Email and site_id are required');
+        }
+
+        // Find subscriber by email
+        const subscriber = await env.DB.prepare('SELECT id FROM subscribers WHERE email = ? AND is_active = 1').bind(body.email).first<{ id: number }>();
+
+        if (!subscriber) {
+          // Return success even if subscriber not found (privacy)
+          return addCorsHeaders(successResponse({ message: 'Unsubscribed successfully' }));
+        }
+
+        // Insert unsubscribe record (ignore if already exists)
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO unsubscribe_sites (subscriber_id, site_id, created_at)
+          VALUES (?, ?, strftime('%s', 'now'))
+        `).bind(subscriber.id, body.site_id).run();
+
+        return addCorsHeaders(successResponse({ message: 'Unsubscribed successfully' }));
+      }
+
+      // Mailing - Send Newsletter
+      if (path === '/api/mailing/send' && method === 'POST') {
+        const body = await request.json() as { site_id?: string; limit?: number; offset?: number } | null;
+        
+        // Get settings
+        const unosendApiKey = await getSetting(env.DB, 'unosend_api_key');
+        const fromEmail = await getSetting(env.DB, 'mailing_from_email');
+        const siteId = body?.site_id || (await getSetting(env.DB, 'site_id'));
+        const limit = body?.limit || 100; // Default batch size 100
+        const offset = body?.offset || 0;
+
+        if (!unosendApiKey) {
+          throw new BadRequestError('Unosend API key not configured');
+        }
+        if (!fromEmail) {
+          throw new BadRequestError('From email not configured');
+        }
+        if (!siteId) {
+          throw new BadRequestError('Site ID not configured');
+        }
+
+        // Get last 10 published site posts with featured images (most recent first)
+        const posts = await env.DB.prepare(`
+          SELECT co.title, p.url, COALESCE(p.published_at, p.created_at) as published_at, co.metadata
+          FROM publishes p
+          JOIN content_outputs co ON p.output_id = co.id
+          WHERE p.platform = 'site' 
+            AND p.status = 'published'
+            AND p.url IS NOT NULL
+            AND co.title IS NOT NULL
+            AND COALESCE(p.published_at, p.created_at) IS NOT NULL
+          ORDER BY COALESCE(p.published_at, p.created_at) DESC
+          LIMIT 10
+        `).all<{ title: string; url: string; published_at: number; metadata: string | null }>();
+
+        if (posts.results.length === 0) {
+          throw new BadRequestError('No published posts found');
+        }
+
+        // Get active subscribers who haven't unsubscribed from this site (with pagination)
+        const allSubscribersCount = await env.DB.prepare(`
+          SELECT COUNT(*) as count
+          FROM subscribers s
+          LEFT JOIN unsubscribe_sites us ON s.id = us.subscriber_id AND us.site_id = ?
+          WHERE s.is_active = 1
+            AND us.id IS NULL
+        `).bind(siteId).first<{ count: number }>();
+
+        const totalCount = allSubscribersCount?.count || 0;
+
+        const subscribers = await env.DB.prepare(`
+          SELECT s.id, s.email, s.first_name
+          FROM subscribers s
+          LEFT JOIN unsubscribe_sites us ON s.id = us.subscriber_id AND us.site_id = ?
+          WHERE s.is_active = 1
+            AND us.id IS NULL
+          ORDER BY s.id ASC
+          LIMIT ? OFFSET ?
+        `).bind(siteId, limit, offset).all<{ id: number; email: string; first_name: string | null }>();
+
+        if (subscribers.results.length === 0) {
+          return addCorsHeaders(successResponse({
+            sent: 0,
+            errors: 0,
+            total: 0,
+            message: 'No more subscribers to process',
+          }));
+        }
+
+        // Construct base URL for unsubscribe links
+        const baseUrl = `${url.protocol}//${url.host}`;
+        
+        // Prepare post data with featured images from metadata
+        const postData = posts.results.map(post => {
+          let featuredImageUrl: string | null = null;
+          if (post.metadata) {
+            try {
+              const metadata = JSON.parse(post.metadata);
+              // featured_image_url could be in metadata directly or nested
+              featuredImageUrl = metadata.featured_image_url || metadata.image_url || null;
+            } catch (e) {
+              // Metadata parse error, ignore
+              console.error('Metadata parse error:', e);
+            }
+          }
+          // Ensure published_at is valid (not 0 or null)
+          const publishedTimestamp = post.published_at && post.published_at > 0 
+            ? post.published_at 
+            : Math.floor(Date.now() / 1000); // Fallback to current time
+          
+          return {
+            title: post.title,
+            url: post.url,
+            published_at: publishedTimestamp,
+            featured_image_url: featuredImageUrl,
+          };
+        });
+
+        // Prepare emails for batch sending (max 100 per batch)
+        const batchSize = 100;
+        const emailBatches: Array<{ from: string; to: string; subject: string; html: string; text: string }>[] = [];
+        
+        for (let i = 0; i < subscribers.results.length; i += batchSize) {
+          const batch = subscribers.results.slice(i, i + batchSize);
+          const batchEmails = batch.map(subscriber => {
+            const unsubscribeUrl = `${baseUrl}/api/mailing/unsubscribe?email=${encodeURIComponent(subscriber.email)}&site_id=${encodeURIComponent(siteId)}`;
+            
+            const html = generateNewsletterTemplate({
+              firstName: subscriber.first_name,
+              posts: postData,
+              unsubscribeUrl,
+              siteName: 'Wishesbirds',
+            });
+
+            const text = generateNewsletterText({
+              firstName: subscriber.first_name,
+              posts: postData,
+              unsubscribeUrl,
+              siteName: 'Wishesbirds',
+            });
+
+            return {
+              from: fromEmail,
+              to: subscriber.email,
+              subject: 'Latest Updates from Wishesbirds',
+              html,
+              text,
+            };
+          });
+          emailBatches.push(batchEmails);
+        }
+
+        let sentCount = 0;
+        let errorCount = 0;
+        const errors: string[] = [];
+
+        // Send emails in batches using Unosend batch API
+        for (let batchIndex = 0; batchIndex < emailBatches.length; batchIndex++) {
+          const batchEmails = emailBatches[batchIndex];
+          try {
+            await sendBatchEmails(unosendApiKey, batchEmails);
+            sentCount += batchEmails.length;
+          } catch (error) {
+            // Batch failed - log error but don't fallback to individual sends
+            // (would exceed Cloudflare Workers subrequest limit)
+            errorCount += batchEmails.length;
+            let errorMessage = 'Unknown error';
+            if (error instanceof Error) {
+              errorMessage = error.message;
+            } else if (typeof error === 'object' && error !== null) {
+              try {
+                errorMessage = JSON.stringify(error);
+              } catch {
+                errorMessage = String(error);
+              }
+            } else {
+              errorMessage = String(error);
+            }
+            errors.push(`Batch ${batchIndex + 1}: ${errorMessage}`);
+            console.error(`Failed to send batch ${batchIndex + 1}:`, error);
+          }
+        }
+
+        return addCorsHeaders(successResponse({
+          sent: sentCount,
+          errors: errorCount,
+          total: subscribers.results.length,
+          processed: sentCount + errorCount,
+          remaining: totalCount - offset - subscribers.results.length,
+          errorDetails: errors.slice(0, 10), // Limit error details
+        }));
       }
     }
 

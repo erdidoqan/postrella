@@ -106,6 +106,27 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
+-- Subscribers table for mailing
+CREATE TABLE IF NOT EXISTS subscribers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  first_name TEXT,
+  is_active INTEGER DEFAULT 1,
+  unsubscribed_at INTEGER,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- Unsubscribe sites table for site-specific unsubscribe management
+CREATE TABLE IF NOT EXISTS unsubscribe_sites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscriber_id INTEGER NOT NULL,
+  site_id TEXT NOT NULL,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (subscriber_id) REFERENCES subscribers(id) ON DELETE CASCADE,
+  UNIQUE(subscriber_id, site_id)
+);
+
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_topics_source_id ON topics(source_id);
 CREATE INDEX IF NOT EXISTS idx_topics_status ON topics(status);
@@ -118,6 +139,10 @@ CREATE INDEX IF NOT EXISTS idx_publishes_output_id ON publishes(output_id);
 CREATE INDEX IF NOT EXISTS idx_publishes_platform ON publishes(platform);
 CREATE INDEX IF NOT EXISTS idx_publishes_status ON publishes(status);
 CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);
+CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
+CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);
+CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_subscriber ON unsubscribe_sites(subscriber_id);
+CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_site ON unsubscribe_sites(site_id);
 
 -- Insert default sources
 INSERT OR IGNORE INTO sources (name, config, is_active) VALUES 

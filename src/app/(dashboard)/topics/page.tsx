@@ -18,6 +18,7 @@ export default function TopicsPage() {
     source: '',
     status: '',
     minScore: '',
+    keyword: '',
   });
 
   const loadTopics = useCallback(async () => {
@@ -27,6 +28,7 @@ export default function TopicsPage() {
         source: filters.source || undefined,
         status: filters.status || undefined,
         minScore: filters.minScore ? parseFloat(filters.minScore) : undefined,
+        keyword: filters.keyword || undefined,
         page,
         limit: 20,
       });

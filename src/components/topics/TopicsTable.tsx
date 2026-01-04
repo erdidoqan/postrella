@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { Sparkles, ExternalLink, MoreHorizontal } from 'lucide-react';
+import Link from 'next/link';
 import {
   Table,
   TableBody,
@@ -180,10 +181,12 @@ export function TopicsTable({ topics, onGenerate }: TopicsTableProps) {
                         align="end"
                         className="bg-zinc-900 border-zinc-700"
                       >
-                        <DropdownMenuItem className="text-zinc-300 focus:bg-zinc-800 focus:text-white cursor-pointer">
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          View Details
-                        </DropdownMenuItem>
+                        <Link href={`/topics/${topic.id}`}>
+                          <DropdownMenuItem className="text-zinc-300 focus:bg-zinc-800 focus:text-white cursor-pointer">
+                            <ExternalLink className="h-4 w-4 mr-2" />
+                            View Details
+                          </DropdownMenuItem>
+                        </Link>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>

@@ -116,6 +116,31 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
+-- Subscribers table for mailing
+CREATE TABLE IF NOT EXISTS subscribers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  first_name TEXT,
+  is_active INTEGER DEFAULT 1,
+  unsubscribed_at INTEGER,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);
+CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);
+
+-- Unsubscribe sites table for site-specific unsubscribe management
+CREATE TABLE IF NOT EXISTS unsubscribe_sites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscriber_id INTEGER NOT NULL,
+  site_id TEXT NOT NULL,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (subscriber_id) REFERENCES subscribers(id) ON DELETE CASCADE,
+  UNIQUE(subscriber_id, site_id)
+);
+CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_subscriber ON unsubscribe_sites(subscriber_id);
+CREATE INDEX IF NOT EXISTS idx_unsubscribe_sites_site ON unsubscribe_sites(site_id);
+
 -- Insert default sources
 INSERT OR IGNORE INTO sources (name, config, is_active) VALUES 
   ('pinterest_trends', '{}', 1),
@@ -147,7 +172,7 @@ export interface Topic {
 
 export interface Account {
   id: number;
-  platform: 'x' | 'reddit' | 'site';
+  platform: 'x' | 'reddit' | 'site' | 'pinterest' | 'mastodon';
   user_id: string | null;
   username: string | null;
   oauth_token: string | null;
@@ -194,7 +219,7 @@ export interface ContentOutput {
 export interface Publish {
   id: number;
   output_id: number;
-  platform: 'site' | 'x' | 'reddit';
+  platform: 'site' | 'x' | 'reddit' | 'pinterest' | 'mastodon';
   account_id: number | null;
   status: 'pending' | 'published' | 'failed';
   remote_id: string | null;
@@ -213,11 +238,30 @@ export interface Setting {
   updated_at: number;
 }
 
+export interface Subscriber {
+  id: number;
+  email: string;
+  first_name: string | null;
+  is_active: number;
+  unsubscribed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface UnsubscribeSite {
+  id: number;
+  subscriber_id: number;
+  site_id: string;
+  created_at: number;
+}
+
 // Parsed types
 export interface GoogleTrendsConfig {
   q: string;
   geo: string;
   date: string;
+  cat?: string;
+  excluded_keywords?: string[];
 }
 
 export interface TopicMetadata {

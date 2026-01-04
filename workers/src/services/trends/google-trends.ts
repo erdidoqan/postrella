@@ -48,7 +48,7 @@ export async function fetchGoogleTrends(
     include_low_search_volume: 'true',
     tz: '420',
     hl: 'en',
-    cat: '14',
+    cat: config.cat || '0',
     data_type: 'RELATED_QUERIES',
     no_cache: 'true',
   });

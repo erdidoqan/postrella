@@ -16,17 +16,18 @@ interface TopicFiltersProps {
     source: string;
     status: string;
     minScore: string;
+    keyword: string;
   };
-  onFiltersChange: (filters: { source: string; status: string; minScore: string }) => void;
+  onFiltersChange: (filters: { source: string; status: string; minScore: string; keyword: string }) => void;
   sources: { name: string }[];
 }
 
 export function TopicFilters({ filters, onFiltersChange, sources }: TopicFiltersProps) {
   const handleClear = () => {
-    onFiltersChange({ source: '', status: '', minScore: '' });
+    onFiltersChange({ source: '', status: '', minScore: '', keyword: '' });
   };
 
-  const hasFilters = filters.source || filters.status || filters.minScore;
+  const hasFilters = filters.source || filters.status || filters.minScore || filters.keyword;
 
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -95,6 +96,17 @@ export function TopicFilters({ filters, onFiltersChange, sources }: TopicFilters
         onChange={(e) => onFiltersChange({ ...filters, minScore: e.target.value })}
         className="w-28 border-zinc-700 bg-zinc-800 text-zinc-300 placeholder:text-zinc-500"
       />
+
+      <div className="relative flex-1 max-w-xs">
+        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-zinc-500" />
+        <Input
+          type="text"
+          placeholder="Keyword ara..."
+          value={filters.keyword}
+          onChange={(e) => onFiltersChange({ ...filters, keyword: e.target.value })}
+          className="pl-10 border-zinc-700 bg-zinc-800 text-zinc-300 placeholder:text-zinc-500"
+        />
+      </div>
 
       {hasFilters && (
         <Button

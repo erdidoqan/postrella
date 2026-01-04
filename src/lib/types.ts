@@ -48,7 +48,7 @@ export interface Topic {
 
 export interface Account {
   id: number;
-  platform: 'x' | 'reddit' | 'site' | 'pinterest';
+  platform: 'x' | 'reddit' | 'site' | 'pinterest' | 'mastodon';
   user_id: string | null;
   username: string | null;
   is_active: number;
@@ -94,7 +94,7 @@ export interface Publish {
   id: number;
   output_id: number;
   output?: ContentOutput;
-  platform: 'site' | 'x' | 'reddit' | 'pinterest';
+  platform: 'site' | 'x' | 'reddit' | 'pinterest' | 'mastodon';
   account_id: number | null;
   status: 'pending' | 'published' | 'failed';
   remote_id: string | null;
@@ -125,12 +125,17 @@ export interface ContentMetadata {
   tag_ids?: number[];
   suggested_category?: string;
   suggested_tags?: string[];
+  featured_image?: string;
+  featured_image_url?: string;
+  excerpt?: string;
 }
 
 export interface GoogleTrendsConfig {
   q: string;
   geo: string;
   date: GoogleTrendsDateValue;
+  cat?: string;
+  excluded_keywords?: string[];
 }
 
 // Google Trends date values
@@ -199,6 +204,8 @@ export interface UpdateGoogleTrendsConfigRequest {
   q: string;
   geo: string;
   date: GoogleTrendsDateValue;
+  cat?: string;
+  excluded_keywords?: string[];
 }
 
 // Filter types
@@ -206,6 +213,7 @@ export interface TopicFilters {
   source?: string;
   status?: string;
   minScore?: number;
+  keyword?: string;
   page?: number;
   limit?: number;
 }
@@ -220,7 +228,7 @@ export interface OutputFilters {
 
 export interface PublishFilters {
   status?: 'pending' | 'published' | 'failed';
-  platform?: 'site' | 'x' | 'reddit' | 'pinterest';
+  platform?: 'site' | 'x' | 'reddit' | 'pinterest' | 'mastodon';
   page?: number;
   limit?: number;
 }

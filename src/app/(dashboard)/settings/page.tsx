@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Settings, Globe, TrendingUp, Save, TestTube, Link, CheckCircle, XCircle } from 'lucide-react';
+import { Settings, Globe, TrendingUp, Save, TestTube, Link, CheckCircle, XCircle, X, Plus } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,6 +31,9 @@ export default function SettingsPage() {
   const [trendsQuery, setTrendsQuery] = useState('');
   const [trendsGeo, setTrendsGeo] = useState('US');
   const [trendsDate, setTrendsDate] = useState<GoogleTrendsDateValue>('now 1-d');
+  const [trendsCategory, setTrendsCategory] = useState('0');
+  const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
+  const [newExcludedKeyword, setNewExcludedKeyword] = useState('');
   const [savingTrends, setSavingTrends] = useState(false);
   const [testingTrends, setTestingTrends] = useState(false);
 
@@ -38,19 +41,32 @@ export default function SettingsPage() {
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [savingGemini, setSavingGemini] = useState(false);
 
+  // Unosend Email settings
+  const [unosendApiKey, setUnosendApiKey] = useState('');
+  const [mailingFromEmail, setMailingFromEmail] = useState('');
+  const [savingUnosend, setSavingUnosend] = useState(false);
+
   // Pinterest settings
   const [pinterestConnected, setPinterestConnected] = useState(false);
   const [pinterestUsername, setPinterestUsername] = useState('');
   const [connectingPinterest, setConnectingPinterest] = useState(false);
+
+  // Mastodon settings
+  const [mastodonConnected, setMastodonConnected] = useState(false);
+  const [mastodonUsername, setMastodonUsername] = useState('');
+  const [connectingMastodon, setConnectingMastodon] = useState(false);
   const [siteCategories, setSiteCategories] = useState<Array<{ id: number; name: string }>>([]);
   const [pinterestBoards, setPinterestBoards] = useState<Array<{ id: string; name: string }>>([]);
   const [boardMappings, setBoardMappings] = useState<Record<string, string>>({});
   const [loadingBoards, setLoadingBoards] = useState(false);
   const [savingBoardMappings, setSavingBoardMappings] = useState(false);
+  const [newBoardName, setNewBoardName] = useState('');
+  const [creatingBoard, setCreatingBoard] = useState(false);
 
   useEffect(() => {
     loadSettings();
     loadPinterestAccount();
+    loadMastodonAccount();
   }, []);
 
   useEffect(() => {
@@ -62,12 +78,14 @@ export default function SettingsPage() {
   const loadSettings = async () => {
     try {
       // Load settings from worker
-      const [siteIdRes, siteKeyRes, serpKeyRes, geminiKeyRes, trendsConfigRes] = await Promise.allSettled([
+      const [siteIdRes, siteKeyRes, serpKeyRes, geminiKeyRes, trendsConfigRes, unosendKeyRes, mailingFromRes] = await Promise.allSettled([
         workerClient.getSettings('site_id'),
         workerClient.getSettings('site_api_key'),
         workerClient.getSettings('serpapi_api_key'),
         workerClient.getSettings('gemini_api_key'),
         workerClient.getSettings('google_trends_config'),
+        workerClient.getSettings('unosend_api_key'),
+        workerClient.getSettings('mailing_from_email'),
       ]);
 
       if (siteIdRes.status === 'fulfilled' && siteIdRes.value.data) {
@@ -87,6 +105,14 @@ export default function SettingsPage() {
         setTrendsQuery(config.q || '');
         setTrendsGeo(config.geo || 'US');
         setTrendsDate(config.date || 'now 1-d');
+        setTrendsCategory(config.cat || '0');
+        setExcludedKeywords(config.excluded_keywords || []);
+      }
+      if (unosendKeyRes.status === 'fulfilled' && unosendKeyRes.value.data) {
+        setUnosendApiKey(unosendKeyRes.value.data.value);
+      }
+      if (mailingFromRes.status === 'fulfilled' && mailingFromRes.value.data) {
+        setMailingFromEmail(mailingFromRes.value.data.value);
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -129,6 +155,8 @@ export default function SettingsPage() {
         q: trendsQuery,
         geo: trendsGeo,
         date: trendsDate,
+        cat: trendsCategory,
+        excluded_keywords: excludedKeywords,
       });
       alert('Google Trends settings saved!');
     } catch (error) {
@@ -137,6 +165,18 @@ export default function SettingsPage() {
     } finally {
       setSavingTrends(false);
     }
+  };
+
+  const handleAddExcludedKeyword = () => {
+    const keyword = newExcludedKeyword.trim().toLowerCase();
+    if (keyword && !excludedKeywords.includes(keyword)) {
+      setExcludedKeywords([...excludedKeywords, keyword]);
+      setNewExcludedKeyword('');
+    }
+  };
+
+  const handleRemoveExcludedKeyword = (keyword: string) => {
+    setExcludedKeywords(excludedKeywords.filter(k => k !== keyword));
   };
 
   const handleTestTrendsFetch = async () => {
@@ -167,6 +207,20 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSaveUnosendSettings = async () => {
+    setSavingUnosend(true);
+    try {
+      await workerClient.updateSetting('unosend_api_key', unosendApiKey);
+      await workerClient.updateSetting('mailing_from_email', mailingFromEmail);
+      alert('Unosend settings saved!');
+    } catch (error) {
+      console.error('Failed to save Unosend settings:', error);
+      alert('Failed to save settings.');
+    } finally {
+      setSavingUnosend(false);
+    }
+  };
+
   const loadPinterestAccount = async () => {
     try {
       const accounts = await workerClient.getAccounts();
@@ -182,6 +236,23 @@ export default function SettingsPage() {
     }
   };
 
+  const loadMastodonAccount = async () => {
+    try {
+      const accounts = await workerClient.getAccounts();
+      if (accounts.success && accounts.data) {
+        const mastodon = accounts.data.find((a) => a.platform === 'mastodon');
+        if (mastodon) {
+          setMastodonConnected(true);
+          setMastodonUsername(mastodon.username || 'Unknown');
+          // Instance URL would be in metadata, but we don't expose it in Account type
+          // For now, just show username
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load Mastodon account:', error);
+    }
+  };
+
   const handlePinterestConnect = async () => {
     setConnectingPinterest(true);
     try {
@@ -194,6 +265,23 @@ export default function SettingsPage() {
       alert('Failed to connect to Pinterest.');
     } finally {
       setConnectingPinterest(false);
+    }
+  };
+
+  const handleMastodonConnect = async () => {
+    setConnectingMastodon(true);
+    try {
+      // Default Mastodon instance
+      const defaultInstanceUrl = 'https://mastodon.social';
+      const result = await workerClient.startMastodonAuth(defaultInstanceUrl);
+      if (result.success && result.data) {
+        window.location.href = result.data.auth_url;
+      }
+    } catch (error) {
+      console.error('Failed to start Mastodon auth:', error);
+      alert('Failed to connect to Mastodon.');
+    } finally {
+      setConnectingMastodon(false);
     }
   };
 
@@ -253,6 +341,31 @@ export default function SettingsPage() {
       ...prev,
       [categoryId]: boardId,
     }));
+  };
+
+  const handleCreateBoard = async () => {
+    if (!newBoardName.trim()) {
+      alert('Please enter a board name');
+      return;
+    }
+    
+    setCreatingBoard(true);
+    try {
+      const result = await workerClient.createPinterestBoard(newBoardName.trim());
+      if (result.success && result.data) {
+        // Add new board to the list
+        setPinterestBoards((prev) => [...prev, { id: result.data!.id, name: result.data!.name }]);
+        setNewBoardName('');
+        alert(`Board "${result.data.name}" created successfully!`);
+      } else {
+        alert('Failed to create board');
+      }
+    } catch (error) {
+      console.error('Failed to create board:', error);
+      alert('Failed to create board');
+    } finally {
+      setCreatingBoard(false);
+    }
   };
 
   const handleSaveBoardMappings = async () => {
@@ -396,7 +509,7 @@ export default function SettingsPage() {
 
           <Separator className="bg-zinc-800" />
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="trends_query" className="text-zinc-300">
                 Search Query (q)
@@ -456,6 +569,76 @@ export default function SettingsPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="trends_category" className="text-zinc-300">
+                Category (cat)
+              </Label>
+              <Input
+                id="trends_category"
+                value={trendsCategory}
+                onChange={(e) => setTrendsCategory(e.target.value)}
+                placeholder="e.g., 0, 14, 45"
+                className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+              />
+            </div>
+          </div>
+
+          <Separator className="bg-zinc-800" />
+
+          {/* Excluded Keywords */}
+          <div className="space-y-3">
+            <Label className="text-zinc-300">
+              Excluded Keywords
+            </Label>
+            <p className="text-sm text-zinc-500">
+              Keywords containing these terms will not be saved as topics
+            </p>
+
+            <div className="flex gap-2">
+              <Input
+                value={newExcludedKeyword}
+                onChange={(e) => setNewExcludedKeyword(e.target.value)}
+                placeholder="e.g., hindi, tamil, telugu"
+                className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddExcludedKeyword();
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleAddExcludedKeyword}
+                disabled={!newExcludedKeyword.trim()}
+                className="border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {excludedKeywords.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {excludedKeywords.map((keyword) => (
+                  <Badge
+                    key={keyword}
+                    variant="outline"
+                    className="bg-red-500/10 text-red-400 border-red-500/30 gap-1 pr-1"
+                  >
+                    {keyword}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveExcludedKeyword(keyword)}
+                      className="ml-1 hover:bg-red-500/20 rounded p-0.5"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -525,6 +708,64 @@ export default function SettingsPage() {
               <Save className="mr-2 h-4 w-4" />
             )}
             Save API Key
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Unosend Email Configuration */}
+      <Card className="border-zinc-800 bg-zinc-900/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-white">
+            <span className="text-2xl">📧</span>
+            Email Configuration (Unosend)
+          </CardTitle>
+          <CardDescription className="text-zinc-400">
+            Configure Unosend API key and sender email for newsletter mailing
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="unosend_api_key" className="text-zinc-300">
+              Unosend API Key
+            </Label>
+            <Input
+              id="unosend_api_key"
+              type="password"
+              value={unosendApiKey}
+              onChange={(e) => setUnosendApiKey(e.target.value)}
+              placeholder="Enter your Unosend API key"
+              className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="mailing_from_email" className="text-zinc-300">
+              From Email Address
+            </Label>
+            <Input
+              id="mailing_from_email"
+              type="email"
+              value={mailingFromEmail}
+              onChange={(e) => setMailingFromEmail(e.target.value)}
+              placeholder="[email protected]"
+              className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+            />
+            <p className="text-xs text-zinc-500">
+              This email address will be used as the sender for newsletter emails
+            </p>
+          </div>
+
+          <Button
+            onClick={handleSaveUnosendSettings}
+            disabled={savingUnosend}
+            className="bg-violet-600 text-white hover:bg-violet-700"
+          >
+            {savingUnosend ? (
+              <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            Save Settings
           </Button>
         </CardContent>
       </Card>
@@ -620,6 +861,34 @@ export default function SettingsPage() {
                 )}
                 Save Board Mappings
               </Button>
+
+              <Separator className="bg-zinc-800" />
+
+              {/* Create New Board */}
+              <div className="space-y-2">
+                <Label className="text-zinc-300 font-semibold">Create New Board</Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={newBoardName}
+                    onChange={(e) => setNewBoardName(e.target.value)}
+                    placeholder="Enter board name"
+                    className="border-zinc-700 bg-zinc-800 text-white placeholder:text-zinc-500"
+                  />
+                  <Button
+                    onClick={handleCreateBoard}
+                    disabled={creatingBoard || !newBoardName.trim()}
+                    variant="outline"
+                    className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 whitespace-nowrap"
+                  >
+                    {creatingBoard ? (
+                      <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-red-400/30 border-t-red-400" />
+                    ) : (
+                      <span className="mr-1">+</span>
+                    )}
+                    Create Board
+                  </Button>
+                </div>
+              </div>
             </>
           )}
         </CardContent>
@@ -701,6 +970,31 @@ export default function SettingsPage() {
               className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20"
             >
               {pinterestConnected ? 'Reconnect' : connectingPinterest ? 'Connecting...' : 'Connect Pinterest'}
+            </Button>
+          </div>
+
+          {/* Mastodon Account */}
+          <div className="flex items-center justify-between rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg bg-violet-500/20 p-2">
+                <svg className="h-5 w-5 text-violet-400" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M23.268 5.313c-.35-1.24-1.472-2.213-2.724-2.55C19.24 2.56 12 2.56 12 2.56s-7.24 0-8.544.203C2.203 3.1 1.082 4.073.73 5.313 0 7.62 0 12.005 0 12.005s0 4.384.73 6.692c.35 1.24 1.472 2.212 2.724 2.55 1.304.203 8.544.203 8.544.203s7.24 0 8.544-.203c1.253-.338 2.375-1.31 2.724-2.55.73-2.308.73-6.692.73-6.692s0-4.384-.73-6.692zm-13.462 7.403V8.288l6.266 3.47-6.266 3.47z"/>
+                </svg>
+              </div>
+              <div>
+                <p className="font-medium text-white">Mastodon</p>
+                <p className="text-sm text-zinc-400">
+                  {mastodonConnected ? `Connected as ${mastodonUsername}` : 'Not connected'}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleMastodonConnect}
+              disabled={connectingMastodon || mastodonConnected}
+              className="border-violet-500/30 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
+            >
+              {mastodonConnected ? 'Reconnect' : connectingMastodon ? 'Connecting...' : 'Connect Mastodon'}
             </Button>
           </div>
         </CardContent>

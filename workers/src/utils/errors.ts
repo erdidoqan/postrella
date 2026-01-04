@@ -62,10 +62,13 @@ export function errorResponse(error: unknown): Response {
 
   console.error('Unhandled error:', error);
   
+  // Return actual error message for debugging (in development)
+  const errorMessage = error instanceof Error ? error.message : 'Internal server error';
+  
   return Response.json(
     {
       success: false,
-      error: 'Internal server error',
+      error: errorMessage,
       code: 'INTERNAL_ERROR',
     },
     { status: 500 }

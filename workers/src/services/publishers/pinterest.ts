@@ -38,7 +38,8 @@ const PINTEREST_AUTH_BASE = 'https://www.pinterest.com/oauth';
 
 export async function publishToPinterest(
   config: PinterestPublishConfig,
-  pinData: PinterestPinData
+  pinData: PinterestPinData,
+  retried: boolean = false
 ): Promise<{ id: string; url: string }> {
   const url = `${PINTEREST_API_BASE}/pins`;
 
@@ -59,12 +60,12 @@ export async function publishToPinterest(
   });
 
   if (!response.ok) {
-    if (response.status === 401) {
-      // Token expired, try to refresh
+    if (response.status === 401 && !retried) {
+      // Token expired, try to refresh (only once)
       const newToken = await refreshPinterestToken(config);
       if (newToken) {
-        // Retry with new token
-        return publishToPinterest({ ...config, accessToken: newToken }, pinData);
+        // Retry with new token, mark as retried
+        return publishToPinterest({ ...config, accessToken: newToken }, pinData, true);
       }
     }
     const error = await response.text();
@@ -122,7 +123,7 @@ export function getPinterestAuthUrl(
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'user_accounts:read,boards:read,pins:write,boards:write',
+    scope: 'user_accounts:read,boards:read,boards:write,pins:read,pins:write',
     state: state,
   });
 
@@ -190,7 +191,8 @@ export async function getPinterestUser(accessToken: string): Promise<PinterestUs
 }
 
 export async function fetchPinterestBoards(
-  config: PinterestPublishConfig
+  config: PinterestPublishConfig,
+  retried: boolean = false
 ): Promise<PinterestBoard[]> {
   const url = `${PINTEREST_API_BASE}/boards`;
 
@@ -202,12 +204,12 @@ export async function fetchPinterestBoards(
   });
 
   if (!response.ok) {
-    if (response.status === 401) {
-      // Token expired, try to refresh
+    if (response.status === 401 && !retried) {
+      // Token expired, try to refresh (only once)
       const newToken = await refreshPinterestToken(config);
       if (newToken) {
-        // Retry with new token
-        return fetchPinterestBoards({ ...config, accessToken: newToken });
+        // Retry with new token, mark as retried
+        return fetchPinterestBoards({ ...config, accessToken: newToken }, true);
       }
     }
     const error = await response.text();
@@ -216,4 +218,48 @@ export async function fetchPinterestBoards(
 
   const data = await response.json() as { items: PinterestBoard[] };
   return data.items || [];
+}
+
+export interface CreateBoardData {
+  name: string;
+  description?: string;
+  privacy?: 'PUBLIC' | 'PROTECTED' | 'SECRET';
+}
+
+export async function createPinterestBoard(
+  config: PinterestPublishConfig,
+  boardData: CreateBoardData,
+  retried: boolean = false
+): Promise<PinterestBoard> {
+  const url = `${PINTEREST_API_BASE}/boards`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.accessToken}`,
+      'User-Agent': 'Postrella/1.0',
+    },
+    body: JSON.stringify({
+      name: boardData.name,
+      description: boardData.description || '',
+      privacy: boardData.privacy || 'PUBLIC',
+    }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401 && !retried) {
+      // Token expired, try to refresh (only once)
+      const newToken = await refreshPinterestToken(config);
+      if (newToken) {
+        // Retry with new token, mark as retried
+        return createPinterestBoard({ ...config, accessToken: newToken }, boardData, true);
+      }
+    }
+    const error = await response.text();
+    throw new Error(`Pinterest API error: ${response.status} - ${error}`);
+  }
+
+  const data = await response.json() as PinterestBoard;
+  return data;
 }

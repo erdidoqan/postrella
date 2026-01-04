@@ -254,21 +254,21 @@ ${strategyContext}${categoriesContext}${tagsContext}${authorsContext}
 
 Requirements:
 - Language: ${locale === 'tr-TR' ? 'Turkish' : 'English'}
-- Length: 1500-2000 words (comprehensive, detailed content)
+- Length: 800-1000 words (comprehensive, detailed content)
 - Include the main keyword naturally 4-6 times throughout the content
 - Include related keywords and long-tail variations naturally
 - Write in the specified tone for the target audience
 
 Content Structure Requirements:
 
-1. INTRODUCTION (3-4 paragraphs):
+1. INTRODUCTION (1 paragraphs):
    - Comprehensively introduce the topic and explain its importance
    - Hook the reader with engaging opening sentences
    - Provide context and background information
    - Set expectations for what the reader will learn
    - Naturally include the main keyword in the first paragraph
 
-2. MAIN SECTIONS (5-7 H2 headings):
+2. MAIN SECTIONS (3-5 H2 headings):
    Each H2 section must explore a different angle, category, or aspect of the topic. Structure each section as follows:
    
    - Section Introduction: 2-3 sentences that explain this specific category/angle and why it matters

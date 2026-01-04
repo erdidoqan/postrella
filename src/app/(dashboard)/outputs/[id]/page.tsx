@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge';
 import { OutputPreview } from '@/components/outputs/OutputPreview';
 import { OutputEditor } from '@/components/outputs/OutputEditor';
 import { PublishButton } from '@/components/outputs/PublishButton';
+import { PinterestPublishButton } from '@/components/outputs/PinterestPublishButton';
+import { MastodonPublishButton } from '@/components/outputs/MastodonPublishButton';
 import workerClient from '@/lib/worker-client';
 import type { ContentOutput, UpdateOutputRequest } from '@/lib/types';
 
@@ -70,6 +72,44 @@ export default function OutputDetailPage() {
     } catch (error) {
       console.error('Failed to publish:', error);
       alert('Failed to publish content.');
+    }
+  };
+
+  const handlePinterestPublish = async (boardId?: string, imageUrl?: string, linkUrl?: string) => {
+    try {
+      const response = await workerClient.publishToPinterest(id, boardId, imageUrl, linkUrl);
+      if (response.success) {
+        alert('Pin published to Pinterest!');
+        // Reload output to get updated status
+        const updatedResponse = await workerClient.getOutput(id);
+        if (updatedResponse.success && updatedResponse.data) {
+          setOutput(updatedResponse.data);
+        }
+      } else {
+        alert(`Failed to publish to Pinterest: ${response.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Failed to publish to Pinterest:', error);
+      alert('Failed to publish to Pinterest.');
+    }
+  };
+
+  const handleMastodonPublish = async (visibility?: 'public' | 'unlisted' | 'private' | 'direct', spoilerText?: string, imageUrl?: string) => {
+    try {
+      const response = await workerClient.publishToMastodon(id, visibility, spoilerText, imageUrl);
+      if (response.success) {
+        alert('Status published to Mastodon!');
+        // Reload output to get updated status
+        const updatedResponse = await workerClient.getOutput(id);
+        if (updatedResponse.success && updatedResponse.data) {
+          setOutput(updatedResponse.data);
+        }
+      } else {
+        alert(`Failed to publish to Mastodon: ${response.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Failed to publish to Mastodon:', error);
+      alert('Failed to publish to Mastodon.');
     }
   };
 
@@ -156,6 +196,8 @@ export default function OutputDetailPage() {
           {output.status !== 'published' && (
             <PublishButton output={output} onPublish={handlePublish} />
           )}
+          <PinterestPublishButton output={output} onPublish={handlePinterestPublish} />
+          <MastodonPublishButton output={output} onPublish={handleMastodonPublish} />
         </div>
       </div>
 
